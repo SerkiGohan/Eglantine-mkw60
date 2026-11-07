@@ -728,6 +728,11 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
     // B2 step 3: with EDEN_NX2_DIRTY_SNAPSHOT=1 the draw works on a copy of the dirty flags.
     Tegra::Engines::Maxwell3D::Nx2DrawDirtyScope dirty_scope{*maxwell3d};
+    if (decltype(buffer_cache)::Nx2PrepContexts() > 1) [[unlikely]] {
+        // B2 step 3, piece 2b (test): binding contexts in turn, see BufferCache::Nx2BeginDraw.
+        std::scoped_lock prep_lock{buffer_cache.mutex};
+        buffer_cache.Nx2BeginDraw();
+    }
     Common::Nx2CacheGuard::SetDirtyFlags(&maxwell3d->DrawDirty()); // B2 cache guard
     if (Tegra::Engines::Maxwell3D::Nx2ReplicaMode() != 0) [[unlikely]] {
         maxwell3d->Nx2SyncReplica(); // B1 step 2: register replica
@@ -943,6 +948,11 @@ void RasterizerVulkan::DrawIndirect() {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
     // B2 step 3: with EDEN_NX2_DIRTY_SNAPSHOT=1 the draw works on a copy of the dirty flags.
     Tegra::Engines::Maxwell3D::Nx2DrawDirtyScope dirty_scope{*maxwell3d};
+    if (decltype(buffer_cache)::Nx2PrepContexts() > 1) [[unlikely]] {
+        // B2 step 3, piece 2b (test): binding contexts in turn, see BufferCache::Nx2BeginDraw.
+        std::scoped_lock prep_lock{buffer_cache.mutex};
+        buffer_cache.Nx2BeginDraw();
+    }
     Common::Nx2CacheGuard::SetDirtyFlags(&maxwell3d->DrawDirty()); // B2 cache guard
     const auto& params = maxwell3d->draw_manager.indirect_state;
     if (VideoCommon::Nx2Diag::Active()) {

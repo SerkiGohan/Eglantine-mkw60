@@ -143,12 +143,15 @@ struct GraphicsBindings {
     std::array<u32, NUM_STAGES> enabled_texture_buffers{};
     std::array<u32, NUM_STAGES> written_texture_buffers{};
     std::array<u32, NUM_STAGES> image_texture_buffers{};
-    std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS> uniform_cache_hits{};
-    std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS> uniform_cache_shots{};
     std::array<u32, NUM_STAGES> dirty_uniform_buffers{};
     std::array<u32, NUM_STAGES> fast_bound_uniform_buffers{};
     std::array<std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>
         uniform_buffer_binding_sizes{};
+    // Vertex buffer slots as last bound (were BufferCache members)
+    u32 enabled_vertex_buffers_mask = 0;
+    u32 stale_vertex_buffers_mask = 0;
+    u64 vertex_buffers_serial = 0;
+    std::array<Binding, 32> v_buffer{};
 };
 
 class BufferCacheChannelInfo : public ChannelInfo {
@@ -158,7 +161,12 @@ public:
     BufferCacheChannelInfo(const BufferCacheChannelInfo& state) = delete;
     BufferCacheChannelInfo& operator=(const BufferCacheChannelInfo&) = delete;
 
-    GraphicsBindings gfx;
+    /// B2 step 3, piece 2b: one graphics binding state per preparer context. With
+    /// EDEN_NX2_PREP_CONTEXTS=N (test, one thread) draws use the contexts in turn, switching every
+    /// EDEN_NX2_PREP_BLOCK draws; otherwise only contexts[0] is used.
+    static constexpr u32 MAX_PREP_CONTEXTS = 4;
+    std::array<GraphicsBindings, MAX_PREP_CONTEXTS> contexts{};
+    u32 active_context = 0;
 
     std::array<Binding, NUM_COMPUTE_UNIFORM_BUFFERS> compute_uniform_buffers;
     std::array<Binding, NUM_STORAGE_BUFFERS> compute_storage_buffers;
@@ -176,6 +184,9 @@ public:
     u32 enabled_compute_texture_buffers = 0;
     u32 written_compute_texture_buffers = 0;
     u32 image_compute_texture_buffers = 0;
+
+    std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS> uniform_cache_hits{};
+    std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS> uniform_cache_shots{};
 
     u32 uniform_buffer_skip_cache_size = DEFAULT_SKIP_CACHE_SIZE;
 
@@ -600,11 +611,28 @@ private:
 
     /// B2 step 3, piece 2: graphics binding state of the current preparer context (the channel's).
     [[nodiscard]] GraphicsBindings& Gfx() noexcept {
-        return channel_state->gfx;
+        return channel_state->contexts[channel_state->active_context];
     }
     [[nodiscard]] const GraphicsBindings& Gfx() const noexcept {
-        return channel_state->gfx;
+        return channel_state->contexts[channel_state->active_context];
     }
+    /// State written from outside the draw preparation goes to every context in use.
+    template <typename Func>
+    void ForEachGfx(Func&& func) {
+        const u32 count = Nx2PrepContexts();
+        for (u32 i = 0; i < count; ++i) {
+            func(channel_state->contexts[i]);
+        }
+    }
+public:
+    static u32 Nx2PrepContexts();
+    static u32 Nx2PrepBlock();
+    /// Called at the start of every draw (RasterizerVulkan::Draw/DrawIndirect).
+    void Nx2BeginDraw();
+private:
+    u64 nx2_prep_draws = 0;
+    u64 nx2_prep_switches = 0;
+    s64 nx2_prep_last_report = 0;
 
     [[nodiscard]] Binding& VertexBufferSlot(u32 index);
 
@@ -645,10 +673,6 @@ private:
 
     u32 last_index_count = 0;
 
-    u32 enabled_vertex_buffers_mask = 0;
-    u32 stale_vertex_buffers_mask = 0;
-    u64 vertex_buffers_serial = 0;
-    std::array<Binding, 32> v_buffer{};
 
     boost::container::small_vector<BufferCopy, 4> upload_copies;
 

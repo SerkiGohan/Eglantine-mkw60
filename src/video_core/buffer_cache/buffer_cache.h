@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
@@ -133,18 +134,18 @@ void BufferCache<P>::TickFrame() {
     }
 
     // Calculate hits and shots and move hit bits to the right
-    const u32 hits = std::reduce(Gfx().uniform_cache_hits.begin(),
-                                 Gfx().uniform_cache_hits.end());
-    const u32 shots = std::reduce(Gfx().uniform_cache_shots.begin(),
-                                  Gfx().uniform_cache_shots.end());
-    std::copy_n(Gfx().uniform_cache_hits.begin(),
-                Gfx().uniform_cache_hits.size() - 1,
-                Gfx().uniform_cache_hits.begin() + 1);
-    std::copy_n(Gfx().uniform_cache_shots.begin(),
-                Gfx().uniform_cache_shots.size() - 1,
-                Gfx().uniform_cache_shots.begin() + 1);
-    Gfx().uniform_cache_hits[0] = 0;
-    Gfx().uniform_cache_shots[0] = 0;
+    const u32 hits = std::reduce(channel_state->uniform_cache_hits.begin(),
+                                 channel_state->uniform_cache_hits.end());
+    const u32 shots = std::reduce(channel_state->uniform_cache_shots.begin(),
+                                  channel_state->uniform_cache_shots.end());
+    std::copy_n(channel_state->uniform_cache_hits.begin(),
+                channel_state->uniform_cache_hits.size() - 1,
+                channel_state->uniform_cache_hits.begin() + 1);
+    std::copy_n(channel_state->uniform_cache_shots.begin(),
+                channel_state->uniform_cache_shots.size() - 1,
+                channel_state->uniform_cache_shots.begin() + 1);
+    channel_state->uniform_cache_hits[0] = 0;
+    channel_state->uniform_cache_shots[0] = 0;
 
     const bool skip_preferred = hits * 256 < shots * 251;
     channel_state->uniform_buffer_skip_cache_size = skip_preferred ? DEFAULT_SKIP_CACHE_SIZE : 0;
@@ -450,7 +451,7 @@ void BufferCache<P>::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr
                                                u32 size) {
     const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
     if (!device_addr) {
-        Gfx().uniform_buffers[stage][index] = NULL_BINDING;
+        ForEachGfx([&](GraphicsBindings& gfx) { gfx.uniform_buffers[stage][index] = NULL_BINDING; });
         return;
     }
     const Binding binding{
@@ -458,17 +459,19 @@ void BufferCache<P>::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr
         .size = size,
         .buffer_id = BufferId{},
     };
-    Gfx().uniform_buffers[stage][index] = binding;
+    ForEachGfx([&](GraphicsBindings& gfx) { gfx.uniform_buffers[stage][index] = binding; });
 }
 
 template <class P>
 void BufferCache<P>::DisableGraphicsUniformBuffer(size_t stage, u32 index) {
-    auto& current = Gfx().uniform_buffers[stage][index];
-    if (current.device_addr == 0 && current.size == 0 && current.buffer_id == NULL_BUFFER_ID)
-        [[likely]] {
-        return;
-    }
-    current = NULL_BINDING;
+    ForEachGfx([&](GraphicsBindings& gfx) {
+        auto& current = gfx.uniform_buffers[stage][index];
+        if (current.device_addr == 0 && current.size == 0 && current.buffer_id == NULL_BUFFER_ID)
+            [[likely]] {
+            return;
+        }
+        current = NULL_BINDING;
+    });
 }
 
 template <class P>
@@ -1020,49 +1023,54 @@ void BufferCache<P>::BindHostVertexBuffer(u32 index, Buffer& buffer, u32 offset,
 template <class P>
 Binding& BufferCache<P>::VertexBufferSlot(u32 index) {
     ASSERT(index < NUM_VERTEX_BUFFERS);
-    return v_buffer[index];
+    return Gfx().v_buffer[index];
 }
 
 template <class P>
 const Binding& BufferCache<P>::VertexBufferSlot(u32 index) const {
     ASSERT(index < NUM_VERTEX_BUFFERS);
-    return v_buffer[index];
+    return Gfx().v_buffer[index];
 }
 
 template <class P>
 void BufferCache<P>::UpdateVertexBufferSlot(u32 index, const Binding& binding) {
     Binding& slot = VertexBufferSlot(index);
     if (slot.device_addr != binding.device_addr || slot.size != binding.size) {
-        ++vertex_buffers_serial;
+        ++Gfx().vertex_buffers_serial;
     }
     slot = binding;
     if (binding.buffer_id != NULL_BUFFER_ID && binding.size != 0) {
-        enabled_vertex_buffers_mask |= (1u << index);
+        Gfx().enabled_vertex_buffers_mask |= (1u << index);
     } else {
-        enabled_vertex_buffers_mask &= ~(1u << index);
+        Gfx().enabled_vertex_buffers_mask &= ~(1u << index);
     }
 }
 
 template <class P>
 void BufferCache<P>::MarkVertexBuffersStale(DAddr device_addr, u64 size) {
     if constexpr (requires { runtime.IsVertexRepacked(u32{}); }) {
-        u32 mask = enabled_vertex_buffers_mask;
-        while (mask != 0) {
-            const u32 index = std::countr_zero(mask);
-            mask &= mask - 1;
-            const Binding& binding = v_buffer[index];
-            if (device_addr < binding.device_addr + binding.size &&
-                binding.device_addr < device_addr + size) {
-                stale_vertex_buffers_mask |= 1U << index;
-            }
+        if (!channel_state) {
+            return;
         }
+        ForEachGfx([&](GraphicsBindings& gfx) {
+            u32 mask = gfx.enabled_vertex_buffers_mask;
+            while (mask != 0) {
+                const u32 index = std::countr_zero(mask);
+                mask &= mask - 1;
+                const Binding& binding = gfx.v_buffer[index];
+                if (device_addr < binding.device_addr + binding.size &&
+                    binding.device_addr < device_addr + size) {
+                    gfx.stale_vertex_buffers_mask |= 1U << index;
+                }
+            }
+        });
     }
 }
 
 template <class P>
 void BufferCache<P>::RefreshRepackedVertexBuffers() {
     if constexpr (requires { runtime.IsVertexRepacked(u32{}); }) {
-        u32 mask = std::exchange(stale_vertex_buffers_mask, 0) & enabled_vertex_buffers_mask;
+        u32 mask = std::exchange(Gfx().stale_vertex_buffers_mask, 0) & Gfx().enabled_vertex_buffers_mask;
         auto& flags = maxwell3d->DrawDirty();
         while (mask != 0) {
             const u32 index = std::countr_zero(mask);
@@ -1086,7 +1094,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
 
     if (use_optimized_vertex_buffers) {
         auto& flags = maxwell3d->DrawDirty();
-        u32 enabled_mask = enabled_vertex_buffers_mask;
+        u32 enabled_mask = Gfx().enabled_vertex_buffers_mask;
         HostBindings<Buffer> bindings{};
         u32 last_index = (std::numeric_limits<u32>::max)();
         const auto flush_bindings = [&]() {
@@ -1198,7 +1206,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 binding_index, bool needs_bind) {
-    ++Gfx().uniform_cache_shots[0];
+    ++channel_state->uniform_cache_shots[0];
     // Bank 24 (root table 0, NVN2's push constants) is read from bank 17, which such games do not
     // bind: stream the table's current words as that buffer.
     if (index == 17 && maxwell3d->root_tables.loaded && Gfx().uniform_buffers[stage][index].size == 0) {
@@ -1318,7 +1326,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     }
     // Classic cached path
     if (SynchronizeBuffer(buffer, device_addr, size)) {
-        ++Gfx().uniform_cache_hits[0];
+        ++channel_state->uniform_cache_hits[0];
     }
     // Skip binding if it's not needed and if the bound buffer is not the fast version
     // This exists to avoid instances where the fast buffer is bound and a GPU write happens
@@ -1510,9 +1518,11 @@ void BufferCache<P>::BindHostTransformFeedbackBuffers() {
 template <class P>
 void BufferCache<P>::BindHostComputeUniformBuffers() {
     if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
-        // Mark all uniform buffers as dirty
-        Gfx().dirty_uniform_buffers.fill(~u32{0});
-        Gfx().fast_bound_uniform_buffers.fill(0);
+        // Mark all uniform buffers as dirty (the compute dispatch replaced the host bindings)
+        ForEachGfx([](GraphicsBindings& gfx) {
+            gfx.dirty_uniform_buffers.fill(~u32{0});
+            gfx.fast_bound_uniform_buffers.fill(0);
+        });
     }
     u32 binding_index = 0;
     ForEachEnabledBit(channel_state->enabled_compute_uniform_buffer_mask, [&](u32 index) {
@@ -2625,6 +2635,79 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
 }
 
 template <class P>
+u32 BufferCache<P>::Nx2PrepContexts() {
+    static const u32 count = [] {
+        const char* value = std::getenv("EDEN_NX2_PREP_CONTEXTS");
+        if (value == nullptr || value[0] < '1' || value[0] > '9') {
+            return 1U;
+        }
+        return std::min(static_cast<u32>(value[0] - '0'), BufferCacheChannelInfo::MAX_PREP_CONTEXTS);
+    }();
+    return count;
+}
+
+template <class P>
+u32 BufferCache<P>::Nx2PrepBlock() {
+    static const u32 block = [] {
+        const char* value = std::getenv("EDEN_NX2_PREP_BLOCK");
+        const unsigned long parsed = value != nullptr ? std::strtoul(value, nullptr, 10) : 0;
+        return parsed == 0 ? 32U : static_cast<u32>(std::min<unsigned long>(parsed, 1U << 20));
+    }();
+    return block;
+}
+
+/// B2 step 3, piece 2b (test, one thread): with EDEN_NX2_PREP_CONTEXTS=N the draws use N binding
+/// contexts in turn, EDEN_NX2_PREP_BLOCK draws each, as parallel preparers would. A context that
+/// takes over has missed the other contexts' draws and does not know what they bound on the host:
+/// its host uniform binding cache is reset and its index/vertex buffers are resolved again
+/// (dirty flags set). If anything else depends on the previous draw, the picture breaks.
+template <class P>
+void BufferCache<P>::Nx2BeginDraw() {
+    const u32 contexts = Nx2PrepContexts();
+    if (contexts <= 1 || !channel_state) {
+        return;
+    }
+    ++nx2_prep_draws;
+    if (nx2_prep_draws % Nx2PrepBlock() == 0) {
+        channel_state->active_context = (channel_state->active_context + 1) % contexts;
+        ++nx2_prep_switches;
+        GraphicsBindings& gfx = Gfx();
+        gfx.dirty_uniform_buffers.fill(~u32{0});
+        gfx.fast_bound_uniform_buffers.fill(0);
+        gfx.uniform_buffer_binding_sizes.fill({});
+        gfx.stale_vertex_buffers_mask |= gfx.enabled_vertex_buffers_mask;
+        auto& flags = maxwell3d->DrawDirty();
+        flags[Dirty::IndexBuffer] = true;
+        flags[Dirty::VertexBuffers] = true;
+        for (u32 index = 0; index < NUM_VERTEX_BUFFERS; ++index) {
+            flags[Dirty::VertexBuffer0 + index] = true;
+        }
+    }
+    if ((nx2_prep_draws & 4095) != 0) {
+        return;
+    }
+    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    if (nx2_prep_last_report == 0) {
+        nx2_prep_last_report = now;
+        nx2_prep_draws = 0;
+        nx2_prep_switches = 0;
+        return;
+    }
+    if (now - nx2_prep_last_report < 10'000'000'000LL) {
+        return;
+    }
+    const double seconds = static_cast<double>(now - nx2_prep_last_report) / 1e9;
+    LOG_INFO(HW_GPU, "Prep contexts: {} contexts, block {} | Draws {:.0f}/s, switches {:.0f}/s",
+             contexts, Nx2PrepBlock(), static_cast<double>(nx2_prep_draws) / seconds,
+             static_cast<double>(nx2_prep_switches) / seconds);
+    nx2_prep_last_report = now;
+    nx2_prep_draws = 0;
+    nx2_prep_switches = 0;
+}
+
+template <class P>
 void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     if constexpr (requires { runtime.OnBufferDeleted(slot_buffers[buffer_id]); }) {
         runtime.OnBufferDeleted(slot_buffers[buffer_id]);
@@ -2642,22 +2725,28 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
         std::ranges::for_each(bindings, scalar_replace);
     };
 
-    if (Gfx().index_buffer.buffer_id == buffer_id) {
-        Gfx().index_buffer.buffer_id = BufferId{};
-        dirty_index = true;
-    }
-
-    for (u32 index = 0; index < Gfx().vertex_buffers.size(); index++) {
-        auto& binding = Gfx().vertex_buffers[index];
-        if (binding.buffer_id == buffer_id) {
-            binding.buffer_id = BufferId{};
-            UpdateVertexBufferSlot(index, binding);
-            dirty_vertex_buffers.push_back(index);
+    // B2 step 3, piece 2b: every preparer context may hold the buffer.
+    const u32 active_context = channel_state->active_context;
+    for (u32 context = 0; context < Nx2PrepContexts(); ++context) {
+        channel_state->active_context = context;
+        if (Gfx().index_buffer.buffer_id == buffer_id) {
+            Gfx().index_buffer.buffer_id = BufferId{};
+            dirty_index = true;
         }
+
+        for (u32 index = 0; index < Gfx().vertex_buffers.size(); index++) {
+            auto& binding = Gfx().vertex_buffers[index];
+            if (binding.buffer_id == buffer_id) {
+                binding.buffer_id = BufferId{};
+                UpdateVertexBufferSlot(index, binding);
+                dirty_vertex_buffers.push_back(index);
+            }
+        }
+        std::ranges::for_each(Gfx().uniform_buffers, replace);
+        std::ranges::for_each(Gfx().storage_buffers, replace);
+        replace(Gfx().transform_feedback_buffers);
     }
-    std::ranges::for_each(Gfx().uniform_buffers, replace);
-    std::ranges::for_each(Gfx().storage_buffers, replace);
-    replace(Gfx().transform_feedback_buffers);
+    channel_state->active_context = active_context;
     replace(channel_state->compute_uniform_buffers);
     replace(channel_state->compute_storage_buffers);
 
@@ -2677,8 +2766,10 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     slot_buffers.erase(buffer_id);
 
     if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
-        Gfx().dirty_uniform_buffers.fill(~u32{0});
-        Gfx().uniform_buffer_binding_sizes.fill({});
+        ForEachGfx([](GraphicsBindings& gfx) {
+            gfx.dirty_uniform_buffers.fill(~u32{0});
+            gfx.uniform_buffer_binding_sizes.fill({});
+        });
     }
 
     auto& flags = maxwell3d->DrawDirty();
