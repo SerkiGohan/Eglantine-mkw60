@@ -45,3 +45,4 @@ by register; pre-parse command lists in parallel; process channels separately wh
 | 7.11.2026 | B1 step 1 CB hazard | The game constantly overwrites memory the previous draw read (handles/pointers/uniforms, ~50 % with a new value) → guest memory reads stay serial in the snapshot, only the resolution afterwards runs in parallel |
 | 7.11.2026 | B1 step 2 register replica | Kept up to date through change bits: ~19 registers/draw, check mode 0 mismatches (Mario Bros. Circuit) |
 | 7.11.2026 | B1 step 3 redirection | All register reads of the preparation go through `DrawRegs()`; test mode 4 (live = previous draw) looks exactly the same |
+| 7.11.2026 | B1 step 4 cost | Replica + redirection ~8 ms/s ≈ 1 % at the back (Mario Bros. Circuit, perf) → **B1 done** |

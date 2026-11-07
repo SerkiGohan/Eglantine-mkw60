@@ -107,3 +107,16 @@ registers show the state of the **previous** draw. The first run crashed in the 
 `GraphicsEnvironment` still read live, among others `post_vtg_shader_attrib_skip_mask` → Sirit `OpAccessChain`). After the fix: **menus
 and Mario Bros. Circuit identical**, no crash. Not redirected yet: constant buffer bindings (`state.shader_stages`),
 `draw_manager.draw_state` (they go into the snapshot in B3).
+
+## Result of step 4 (7.11.2026 13:37/13:39, time trial on Mario Bros. Circuit against the Nintendo ghost, perf_graph 20 s, fork `9ff1a87c99`)
+
+| back, ms CPU/s | mode 3 (replica used) | mode 0 (off) |
+|---|---|---|
+| GPUBack total | 821 | 806 |
+| `RasterizerVulkan::Draw` incl. | 267 | 258 |
+| `ProcessDirtyRegisters` incl. (with marking) | ~15 | ~13 |
+| `Nx2SyncReplica` incl. | ~6 | – |
+
+→ Replica + marking + redirection cost **~8 ms/s ≈ 1 %** of the back thread (goal < 3 % met; the difference of the totals is within the
+noise of two runs). Perf data `~/mkw-perf/perf/graph-20261107-133715/` (mode 3) and `…-133937/` (mode 0).
+**B1 done.** Next: B2 (cache read paths thread-safe).
