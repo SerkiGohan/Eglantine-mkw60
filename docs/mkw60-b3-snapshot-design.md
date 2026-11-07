@@ -175,3 +175,19 @@ So it pays off to make the serial chunks cheaper on the side (uniform copy, flus
   dirty copy, check counters. Not a measure for P3.
 - **B2 is done with this** (step 4: second reader without a crash, 0 mismatches). The caches cope with concurrent reads as long as
   structural changes wait for the preparers.
+
+## Base cost without switches (7.11.2026 20:00, Mario Bros. Circuit with ghost, perf_graph 20 s, fork `a1cd7dab17`, `~/mkw-perf/perf/graph-20261107-200035/`)
+
+Comparison with 13:39 (fork `9ff1a87c99`, B1 state, also without switches, `graph-20261107-133937`):
+
+| ms CPU/s | 13:39 | 20:00 | change |
+|---|---|---|---|
+| GPU (front, code unchanged) | 785 | 841 | +7 % |
+| GPUBack (back) | 806 | 872 | +8 % |
+| ratio back/front | 1.027 | 1.037 | **+1 %** |
+| `RasterizerVulkan::Draw` incl. | 258 | 288 | +12 % |
+
+Nothing changed in the front's code and it still rose by 7 % → the 20 s window had more load (a different track section or more
+frames). Relative to that, the rework without switches costs **about 1 % at the back** (draw path a bit more, ~+4 %). New in the self list:
+`BindHostGraphicsUniformBuffer`, `GetSamplerId`, `RefreshContents` – inlined before, now separate functions (inlining), no new work.
+Exact cost per draw could only be measured with draws/s (perf does not know them); the ratio is enough for a decision.
