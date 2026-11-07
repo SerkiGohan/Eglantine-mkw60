@@ -94,3 +94,22 @@ front (parse, macros) → back (registers, methods) → Back2 (caches, draw prep
 - Release latency: time from queuing a release at the back until it is written, split into register/cache share.
 - Constant buffer updates between draws: how many, where to (same addresses as uniforms read before?).
 - Share of compute/uploads between the draws (block boundaries for B).
+
+## Addendum 7.11. 12:30: measurement error and decision against A
+
+The zone measurement (`EDEN_NX2_GPU_PROFILE`) reads the clock twice per zone. At millions of zones per second this
+costs ~27 % at the back and inflates "method"/"other". Without zones (perf with LBR call chains, Peach standing still):
+
+| back, ms CPU/s | |
+|---|---|
+| Draws (`RasterizerVulkan::Draw`, of which `ConfigureImpl` ~190) | ~257 |
+| Compute engine (dispatches, QMDs) | ~57 |
+| Invalidation after uploads (`FlushCaching`) | ~34 |
+| Uploads, CB data, fences, `WriteMemory` | ~55 |
+| Registers/methods without draws | ~50 |
+| Main loop (waiting/dispatching) | ~90 |
+
+→ The register half is small, **design A would bring almost nothing** (Back2 would get ~90 % of the work) and would
+lengthen the chain. Design B remains: realistically ~120–150 ms/s can be parallelized, the back ~20–25 % lighter;
+after that the front (~24 ms/frame) is the bottleneck. For Peach Stadium the ceiling is then ~40 FPS.
+Next step: measure how far races (time trials) are from 60 FPS.
