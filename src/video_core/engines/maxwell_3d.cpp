@@ -314,6 +314,7 @@ u32 Maxwell3D::ProcessShadowRam(u32 method, u32 argument) {
 }
 
 void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
+    VideoCommon::Nx2Profile::Scope sink_zone{VideoCommon::Nx2Profile::Zone::ConsumeSink};
     const auto control = shadow_state.shadow_ram_control;
     // Sunk methods are state writes only (not in execution_mask): skip unchanged values, as
     // CallMethod does.
@@ -401,31 +402,39 @@ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argume
     case MAXWELL3D_REG_INDEX(const_buffer.buffer) + 12:
     case MAXWELL3D_REG_INDEX(const_buffer.buffer) + 13:
     case MAXWELL3D_REG_INDEX(const_buffer.buffer) + 14:
-    case MAXWELL3D_REG_INDEX(const_buffer.buffer) + 15:
+    case MAXWELL3D_REG_INDEX(const_buffer.buffer) + 15: {
+        VideoCommon::Nx2Profile::Scope zone{VideoCommon::Nx2Profile::Zone::CbData};
         return ProcessCBData(argument);
+    }
     case MAXWELL3D_REG_INDEX(bind_groups[0].raw_config):
-        return ProcessCBBind(0);
     case MAXWELL3D_REG_INDEX(bind_groups[1].raw_config):
-        return ProcessCBBind(1);
     case MAXWELL3D_REG_INDEX(bind_groups[2].raw_config):
-        return ProcessCBBind(2);
     case MAXWELL3D_REG_INDEX(bind_groups[3].raw_config):
-        return ProcessCBBind(3);
-    case MAXWELL3D_REG_INDEX(bind_groups[4].raw_config):
-        return ProcessCBBind(4);
-    case MAXWELL3D_REG_INDEX(report_semaphore.query):
+    case MAXWELL3D_REG_INDEX(bind_groups[4].raw_config): {
+        VideoCommon::Nx2Profile::Scope zone{VideoCommon::Nx2Profile::Zone::CbBind};
+        constexpr u32 first = MAXWELL3D_REG_INDEX(bind_groups[0].raw_config);
+        constexpr u32 stride = MAXWELL3D_REG_INDEX(bind_groups[1].raw_config) - first;
+        return ProcessCBBind((method - first) / stride);
+    }
+    case MAXWELL3D_REG_INDEX(report_semaphore.query): {
+        VideoCommon::Nx2Profile::Scope zone{VideoCommon::Nx2Profile::Zone::QueryReport};
         return ProcessQueryGet();
+    }
     case MAXWELL3D_REG_INDEX(render_enable.mode):
         return ProcessQueryCondition();
     case MAXWELL3D_REG_INDEX(clear_report_value):
         return ProcessCounterReset();
     case MAXWELL3D_REG_INDEX(sync_info):
         return ProcessSyncPoint();
-    case MAXWELL3D_REG_INDEX(launch_dma):
+    case MAXWELL3D_REG_INDEX(launch_dma): {
+        VideoCommon::Nx2Profile::Scope zone{VideoCommon::Nx2Profile::Zone::InlineUpload};
         return upload_state.ProcessExec(regs.launch_dma.memory_layout.Value() == Regs::LaunchDMA::Layout::Pitch);
-    case MAXWELL3D_REG_INDEX(inline_data):
+    }
+    case MAXWELL3D_REG_INDEX(inline_data): {
+        VideoCommon::Nx2Profile::Scope zone{VideoCommon::Nx2Profile::Zone::InlineUpload};
         upload_state.ProcessData(argument, is_last_call);
         return;
+    }
     case MAXWELL3D_REG_INDEX(fragment_barrier):
         return rasterizer->FragmentBarrier();
     case MAXWELL3D_REG_INDEX(invalidate_texture_data_cache):
@@ -567,10 +576,14 @@ void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* bas
     case MAXWELL3D_REG_INDEX(const_buffer.buffer) + 13:
     case MAXWELL3D_REG_INDEX(const_buffer.buffer) + 14:
     case MAXWELL3D_REG_INDEX(const_buffer.buffer) + 15:
+    {
+        VideoCommon::Nx2Profile::Scope zone{VideoCommon::Nx2Profile::Zone::CbData};
         ProcessCBMultiData(base_start, amount);
+    }
         break;
     case MAXWELL3D_REG_INDEX(inline_data): {
         ASSERT(methods_pending == amount);
+        VideoCommon::Nx2Profile::Scope upload_zone{VideoCommon::Nx2Profile::Zone::InlineUpload};
         upload_state.ProcessData(base_start, amount);
         return;
     }

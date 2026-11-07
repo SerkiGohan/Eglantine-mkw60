@@ -447,6 +447,7 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
 }
 
 void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
+    VideoCommon::Nx2Profile::Scope compute_method_zone{VideoCommon::Nx2Profile::Zone::ComputeMethod};
     if (front_macros && !VideoCommon::GpuSplit::OnBackThread()) [[unlikely]] {
         ReleaseFront();
     }

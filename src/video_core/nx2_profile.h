@@ -51,6 +51,13 @@ enum class Zone : u32 {
     Method,       ///< Engine method calls (what a split GPU thread's back half would run)
     SplitDrain,   ///< Split GPU thread: the front waits for the back (gpu_split.h)
     SplitWait,    ///< Split GPU thread: the back waits for work
+    // M2 balance (fork mkw60): what the back's "method" time is made of
+    CbData,       ///< constant buffer updates (guest memory writes)
+    CbBind,       ///< constant buffer binds (buffer cache)
+    QueryReport,  ///< REPORT_SEMAPHORE / counters
+    InlineUpload, ///< inline-to-memory uploads (launch_dma, inline_data)
+    ConsumeSink,  ///< batched state writes applied before an executed method
+    ComputeMethod, ///< compute engine methods (QMDs, releases) outside the dispatch itself
     Count,
 };
 
@@ -62,6 +69,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
     "fence skipped", "method", "split drain", "split wait",
+    "cb data", "cb bind", "query report", "inline upload", "consume sink", "compute method",
 };
 
 // Read once at startup: Enabled() runs several times per method write (no guard to check).
