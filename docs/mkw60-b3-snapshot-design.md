@@ -147,3 +147,19 @@ So it pays off to make the serial chunks cheaper on the side (uniform copy, flus
   new buffers 0–11/s, textures 0 (texture uploads all happen in the serial part). Menu/loading up to 1.2 %. Better than the M2 estimate (1–3 %).
 - Draws/s in the race as usual (75,000–86,000), descriptor reservation still 0 mismatches.
 - Open for P2/P3: upload check in the serial part (instead of counting afterwards), cost of the split with perf.
+
+## Result of P2, first version with cache locks (7.11.2026 ~17:30, Mario Bros. Circuit, fork `8202747ba9`, log `~/mkw-perf/fork/p2-shadow-mario.log`)
+
+- `EDEN_NX2_PREP_SHADOW=1` (every 32nd draw) with all switches: **image optimal** (user), no crash. Rare rubberbanding only during
+  short drops to 30 FPS (the shadow reader holds the locks, test mode with a switch after every draw).
+- ~352,000 compared draws (up to ~2,600/s in the race), queue never full, **"serial needed" 0**.
+- **1 mismatch, while loading (58.9 s):** entry 3 of 15 and SSBO binding 0/0. After that **0 mismatches** in all 19 windows
+  (count, entries, bindings). Assumption: the shadow reader ran after the real draw; while loading, buffers are created and
+  merged (old ones deleted), and it already found the new buffer for the same address. Both are valid for the image, but it shows
+  the actual rule for P3: **structural changes (creating/merging/deleting buffers, growing `slot_vector`) only while no
+  preparer is reading.**
+- This proves: the preparation depends only on the snapshot and its context and reaches the same result on another
+  thread.
+- Next step P2b: shadow reader **without** cache locks. Needed for that: a read lock for preparers against structural changes
+  (reader-writer lock around `CreateBuffer`/`DeleteBuffer`/image creation/`slot_vector` growth), the caches' shared helper vectors
+  (`graphics_segments`, `upload_copies`, `Buffer::View` cache) per thread.
