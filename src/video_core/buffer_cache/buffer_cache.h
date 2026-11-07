@@ -1107,7 +1107,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
                 continue;
             }
             flags[Dirty::VertexBuffer0 + index] = false;
-            const u32 stride = maxwell3d->regs.vertex_streams[index].stride;
+            const u32 stride = maxwell3d->DrawRegs().vertex_streams[index].stride;
             const u32 offset = buffer.Offset(binding.device_addr);
             buffer.MarkUsage(offset, binding.size);
             if (!bindings.buffers.empty() && index != last_index + 1) {
@@ -1150,7 +1150,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
                 const Binding& binding = channel_state->vertex_buffers[index];
                 Buffer& buffer = slot_buffers[binding.buffer_id];
 
-                const u32 stride = maxwell3d->regs.vertex_streams[index].stride;
+                const u32 stride = maxwell3d->DrawRegs().vertex_streams[index].stride;
                 const u32 offset = buffer.Offset(binding.device_addr);
                 buffer.MarkUsage(offset, binding.size);
 
@@ -1473,13 +1473,13 @@ void BufferCache<P>::BindHostGraphicsTextureBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::BindHostTransformFeedbackBuffers() {
-    if (maxwell3d->regs.transform_feedback_enabled == 0) {
+    if (maxwell3d->DrawRegs().transform_feedback_enabled == 0) {
         return;
     }
     HostBindings<typename P::Buffer> host_bindings;
     for (u32 index = 0; index < NUM_TRANSFORM_FEEDBACK_BUFFERS; ++index) {
         const Binding& binding = channel_state->transform_feedback_buffers[index];
-        const auto& control = maxwell3d->regs.transform_feedback.controls[index];
+        const auto& control = maxwell3d->DrawRegs().transform_feedback.controls[index];
         const bool has_layout = control.varying_count != 0 || control.stride != 0;
 
         Buffer* host_buffer = &slot_buffers[NULL_BUFFER_ID];
@@ -1713,11 +1713,11 @@ void BufferCache<P>::UpdateVertexBuffer(u32 index) {
     if (!maxwell3d->dirty.flags[Dirty::VertexBuffer0 + index]) {
         return;
     }
-    const auto& array = maxwell3d->regs.vertex_streams[index];
-    const auto& limit = maxwell3d->regs.vertex_stream_limits[index];
+    const auto& array = maxwell3d->DrawRegs().vertex_streams[index];
+    const auto& limit = maxwell3d->DrawRegs().vertex_stream_limits[index];
     const GPUVAddr gpu_addr_begin = array.Address();
     const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
-    const u64 native_size = native ? maxwell3d->regs.NativeVertexStreamSize(index) : 0;
+    const u64 native_size = native ? maxwell3d->DrawRegs().NativeVertexStreamSize(index) : 0;
     if (native && array.enable != 0 && native_size > (std::numeric_limits<u32>::max)()) {
         throw std::runtime_error("Native vertex stream exceeds supported 32-bit buffer size");
     }
@@ -1813,7 +1813,7 @@ void BufferCache<P>::UpdateTextureBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::UpdateTransformFeedbackBuffers() {
-    if (maxwell3d->regs.transform_feedback_enabled == 0) {
+    if (maxwell3d->DrawRegs().transform_feedback_enabled == 0) {
         return;
     }
     for (u32 index = 0; index < NUM_TRANSFORM_FEEDBACK_BUFFERS; ++index) {
@@ -1823,7 +1823,7 @@ void BufferCache<P>::UpdateTransformFeedbackBuffers() {
 
 template <class P>
 void BufferCache<P>::UpdateTransformFeedbackBuffer(u32 index) {
-    const auto& binding = maxwell3d->regs.transform_feedback.buffers[index];
+    const auto& binding = maxwell3d->DrawRegs().transform_feedback.buffers[index];
     const GPUVAddr gpu_addr = binding.Address() + binding.start_offset;
     const u32 size = binding.size;
     const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
