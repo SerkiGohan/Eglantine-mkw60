@@ -128,3 +128,13 @@ Median over 13 lines in the race (~85,000 draws/s), writes per draw:
 in the parallel part only ~5 times per second → a serial fallback is enough. Everything else is state that can be kept per preparer:
 bindings, descriptors, commands, dirty mask, current pipeline, LRU log. Not covered by the guard: `PipelineCache::graphics_key`
 (refilled on every draw, a member) and `GraphicsPipeline::MarkUsed` – both also per preparer or logged.
+
+## Result of step 3, piece 1: dirty mask (7.11.2026 ~15:35, Mario Bros. Circuit, fork `8ccd315e29`, `EDEN_NX2_DIRTY_SNAPSHOT=1`, log `~/mkw-perf/fork/b2-dirty-snapshot-mario.log`)
+
+- **0 draws with a direct change** of the shared flags (all 17 lines, menu + race) → redirection through `DrawDirty()`/`StateTracker::DirtyFlags()` complete.
+- A draw clears ~5 flags (menu up to 14). Practically none are set (≤ 0.06/draw, only while loading).
+- Flags that a draw only **sometimes** consumes (for B3: the serial part has to know in advance what a preparer consumes):
+  - `VertexBuffer1…10` (no. 17–26): only cleared if the draw uses the slot (~1–2 %), otherwise they stay set → can be determined from the registers (number/use of the vertex streams).
+  - `IndexBuffer` (48): only for indexed draws (non-indexed ~30/s).
+  - `DepthBiasGlobal` (50): `TouchDepthBias` checks with `||` – if `DepthBias` is set, `DepthBiasGlobal` stays set (short circuit). Rebuild for B3 or turn into a fixed rule.
+- Also found (not covered by the guard, for piece 4): own state in the `StateTracker` (topology, stencil values, `stencil_reset`) and `ShaderCache::last_shaders_valid`.
