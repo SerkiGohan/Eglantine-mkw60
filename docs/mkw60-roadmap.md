@@ -41,3 +41,5 @@ by register; pre-parse command lists in parallel; process channels separately wh
 | 7.11.2026 | M1 draw reuse | 93 % of draws unique → rejected |
 | 7.11.2026 | M2 measurement of cache changes | 97–99 % of draws read-only → B possible in principle |
 | 7.11.2026 | M2 design A | register half only ~50 ms/s → rejected |
+| 7.11.2026 | B0 race baseline | Time trial (Nintendo ghost), fixed 60 FPS, wait statistics: Mario Bros. Circuit 46–55 FPS (18.2–21.9 ms), Peach Stadium track 41–54 FPS (18.4–24.4 ms). GPU 52–66 %. While the game waits for the GPU: **back 89–91 % busy, front 35–44 %**; critical path ~57–63 % drain (the front waits for the back, of which acquire ~51–58 %). → In races the back thread is the bottleneck; ~2–8 ms per frame are missing for 60 FPS. Timelines `~/mkw-perf/traces/b0-*-20261107-*`. |
+
