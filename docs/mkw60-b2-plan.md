@@ -179,3 +179,24 @@ bindings, descriptors, commands, dirty mask, current pipeline, LRU log. Not cove
 - **Step 3 is done with this.** Known for B3: pass uniform entries from the serial part in the snapshot;
   `GraphicsPipeline::last_descriptor_payload`/`last_descriptor_buffer_*` per preparer or locked; the AMD logic op workaround writes
   into the replica (per preparer).
+
+## Serial chunk "flush work" (7.11.2026 ~20:30, Mario Bros. Circuit, fork `d0b8ec3fb1`, `EDEN_NX2_FLUSH_PROBE=1`, log `~/mkw-perf/fork/flush-probe-mario.log`)
+
+Race, ~85,000–99,000 draws/s:
+
+| | ms/s (wall clock) |
+|---|---|
+| `FlushWork` (wake the worker every 32, submit every 128 draws) | ~3 |
+| `FlushCaching` total | **~53–58** |
+| of which buffer cache `WriteMemory` | ~28–30 |
+| of which query cache `InvalidateRegion` | ~7 |
+| of which texture cache `WriteMemory` | ~6 |
+| of which pipeline cache `InvalidateRegions` | ~5.5 |
+| rest (accumulator, address translation) | ~6 |
+
+- **~90 % of draws** invalidate something first: on average **~4.7 ranges with ~160 bytes together** – the game's constant buffer updates
+  (`ProcessCBMultiData` → `WriteBlockCached`), which the accumulator (`InvalidationAccumulator`, 32-byte grid) only merges if they
+  are directly adjacent. That is ~420,000 ranges/s, each one goes through four caches (~120 ns per range).
+- Outside draws ~4,500 invalidations/s (DMA, copies).
+- Starting points: (1) merge nearby ranges in the same memory block (fewer passes; invalidating too much is harmless in the buffer cache,
+  in the texture cache theoretically not), (2) a fast path in the buffer cache if the range is already CPU-modified and not GPU-modified.
