@@ -121,13 +121,12 @@ struct HostBindings {
     u32 max_index{0};
 };
 
-class BufferCacheChannelInfo : public ChannelInfo {
-public:
-    BufferCacheChannelInfo() = delete;
-    BufferCacheChannelInfo(Tegra::Control::ChannelState& state) noexcept : ChannelInfo(state) {}
-    BufferCacheChannelInfo(const BufferCacheChannelInfo& state) = delete;
-    BufferCacheChannelInfo& operator=(const BufferCacheChannelInfo&) = delete;
-
+/// B2 step 3, piece 2 (fork mkw60): the graphics binding state a draw preparation derives and
+/// keeps between draws (resolved bindings, enabled/written masks, which uniform buffers the host
+/// already has bound). Today one per channel; with parallel preparers one per preparer context.
+/// uniform_buffers holds the bound constant buffers (written by constant buffer bind methods
+/// outside draws) together with their lazily resolved buffer ids.
+struct GraphicsBindings {
     Binding index_buffer;
     std::array<Binding, NUM_VERTEX_BUFFERS> vertex_buffers;
     std::array<std::array<Binding, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES> uniform_buffers;
@@ -136,43 +135,51 @@ public:
     std::array<Binding, NUM_TRANSFORM_FEEDBACK_BUFFERS> transform_feedback_buffers;
     Binding count_buffer_binding;
     Binding indirect_buffer_binding;
+    std::array<u32, NUM_STAGES> enabled_uniform_buffer_masks{};
+    const UniformBufferSizes* uniform_buffer_sizes{};
+    std::array<u32, NUM_STAGES> enabled_storage_buffers{};
+    std::array<u32, NUM_STAGES> written_storage_buffers{};
+    u32 total_graphics_storage_buffers = 0;
+    std::array<u32, NUM_STAGES> enabled_texture_buffers{};
+    std::array<u32, NUM_STAGES> written_texture_buffers{};
+    std::array<u32, NUM_STAGES> image_texture_buffers{};
+    std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS> uniform_cache_hits{};
+    std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS> uniform_cache_shots{};
+    std::array<u32, NUM_STAGES> dirty_uniform_buffers{};
+    std::array<u32, NUM_STAGES> fast_bound_uniform_buffers{};
+    std::array<std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>
+        uniform_buffer_binding_sizes{};
+};
+
+class BufferCacheChannelInfo : public ChannelInfo {
+public:
+    BufferCacheChannelInfo() = delete;
+    BufferCacheChannelInfo(Tegra::Control::ChannelState& state) noexcept : ChannelInfo(state) {}
+    BufferCacheChannelInfo(const BufferCacheChannelInfo& state) = delete;
+    BufferCacheChannelInfo& operator=(const BufferCacheChannelInfo&) = delete;
+
+    GraphicsBindings gfx;
 
     std::array<Binding, NUM_COMPUTE_UNIFORM_BUFFERS> compute_uniform_buffers;
     std::array<Binding, NUM_STORAGE_BUFFERS> compute_storage_buffers;
     std::array<TextureBufferBinding, NUM_TEXTURE_BUFFERS> compute_texture_buffers;
 
-    std::array<u32, NUM_STAGES> enabled_uniform_buffer_masks{};
     u32 enabled_compute_uniform_buffer_mask = 0;
 
-    const UniformBufferSizes* uniform_buffer_sizes{};
     const ComputeUniformBufferSizes* compute_uniform_buffer_sizes{};
 
-    std::array<u32, NUM_STAGES> enabled_storage_buffers{};
-    std::array<u32, NUM_STAGES> written_storage_buffers{};
     u32 enabled_compute_storage_buffers = 0;
     u32 written_compute_storage_buffers = 0;
 
-    u32 total_graphics_storage_buffers = 0;
     u32 total_compute_storage_buffers = 0;
 
-    std::array<u32, NUM_STAGES> enabled_texture_buffers{};
-    std::array<u32, NUM_STAGES> written_texture_buffers{};
-    std::array<u32, NUM_STAGES> image_texture_buffers{};
     u32 enabled_compute_texture_buffers = 0;
     u32 written_compute_texture_buffers = 0;
     u32 image_compute_texture_buffers = 0;
 
-    std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS> uniform_cache_hits{};
-    std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS> uniform_cache_shots{};
-
     u32 uniform_buffer_skip_cache_size = DEFAULT_SKIP_CACHE_SIZE;
 
     bool has_deleted_buffers = false;
-
-    std::array<u32, NUM_STAGES> dirty_uniform_buffers{};
-    std::array<u32, NUM_STAGES> fast_bound_uniform_buffers{};
-    std::array<std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>
-        uniform_buffer_binding_sizes{};
 };
 
 template <class P>
@@ -401,17 +408,17 @@ public:
             });
             return;
         }
-        const auto* const sizes = channel_state->uniform_buffer_sizes;
+        const auto* const sizes = Gfx().uniform_buffer_sizes;
         for (u32 stage = 0; stage < NUM_STAGES; ++stage) {
-            ForEachEnabledBit(channel_state->enabled_uniform_buffer_masks[stage], [&](u32 index) {
-                const Binding& binding = channel_state->uniform_buffers[stage][index];
+            ForEachEnabledBit(Gfx().enabled_uniform_buffer_masks[stage], [&](u32 index) {
+                const Binding& binding = Gfx().uniform_buffers[stage][index];
                 visit(stage, false, index, false, binding,
                       sizes ? (std::min)(binding.size, (*sizes)[stage][index]) : binding.size);
             });
-            ForEachEnabledBit(channel_state->enabled_storage_buffers[stage], [&](u32 index) {
-                const Binding& binding = channel_state->storage_buffers[stage][index];
+            ForEachEnabledBit(Gfx().enabled_storage_buffers[stage], [&](u32 index) {
+                const Binding& binding = Gfx().storage_buffers[stage][index];
                 visit(stage, true, index,
-                      ((channel_state->written_storage_buffers[stage] >> index) & 1) != 0, binding,
+                      ((Gfx().written_storage_buffers[stage] >> index) & 1) != 0, binding,
                       binding.size);
             });
         }
@@ -590,6 +597,14 @@ private:
     [[nodiscard]] std::span<u8> ImmediateBuffer(size_t wanted_capacity);
 
     [[nodiscard]] bool HasFastUniformBufferBound(size_t stage, u32 binding_index) const noexcept;
+
+    /// B2 step 3, piece 2: graphics binding state of the current preparer context (the channel's).
+    [[nodiscard]] GraphicsBindings& Gfx() noexcept {
+        return channel_state->gfx;
+    }
+    [[nodiscard]] const GraphicsBindings& Gfx() const noexcept {
+        return channel_state->gfx;
+    }
 
     [[nodiscard]] Binding& VertexBufferSlot(u32 index);
 

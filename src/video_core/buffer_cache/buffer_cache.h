@@ -133,18 +133,18 @@ void BufferCache<P>::TickFrame() {
     }
 
     // Calculate hits and shots and move hit bits to the right
-    const u32 hits = std::reduce(channel_state->uniform_cache_hits.begin(),
-                                 channel_state->uniform_cache_hits.end());
-    const u32 shots = std::reduce(channel_state->uniform_cache_shots.begin(),
-                                  channel_state->uniform_cache_shots.end());
-    std::copy_n(channel_state->uniform_cache_hits.begin(),
-                channel_state->uniform_cache_hits.size() - 1,
-                channel_state->uniform_cache_hits.begin() + 1);
-    std::copy_n(channel_state->uniform_cache_shots.begin(),
-                channel_state->uniform_cache_shots.size() - 1,
-                channel_state->uniform_cache_shots.begin() + 1);
-    channel_state->uniform_cache_hits[0] = 0;
-    channel_state->uniform_cache_shots[0] = 0;
+    const u32 hits = std::reduce(Gfx().uniform_cache_hits.begin(),
+                                 Gfx().uniform_cache_hits.end());
+    const u32 shots = std::reduce(Gfx().uniform_cache_shots.begin(),
+                                  Gfx().uniform_cache_shots.end());
+    std::copy_n(Gfx().uniform_cache_hits.begin(),
+                Gfx().uniform_cache_hits.size() - 1,
+                Gfx().uniform_cache_hits.begin() + 1);
+    std::copy_n(Gfx().uniform_cache_shots.begin(),
+                Gfx().uniform_cache_shots.size() - 1,
+                Gfx().uniform_cache_shots.begin() + 1);
+    Gfx().uniform_cache_hits[0] = 0;
+    Gfx().uniform_cache_shots[0] = 0;
 
     const bool skip_preferred = hits * 256 < shots * 251;
     channel_state->uniform_buffer_skip_cache_size = skip_preferred ? DEFAULT_SKIP_CACHE_SIZE : 0;
@@ -450,7 +450,7 @@ void BufferCache<P>::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr
                                                u32 size) {
     const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
     if (!device_addr) {
-        channel_state->uniform_buffers[stage][index] = NULL_BINDING;
+        Gfx().uniform_buffers[stage][index] = NULL_BINDING;
         return;
     }
     const Binding binding{
@@ -458,12 +458,12 @@ void BufferCache<P>::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr
         .size = size,
         .buffer_id = BufferId{},
     };
-    channel_state->uniform_buffers[stage][index] = binding;
+    Gfx().uniform_buffers[stage][index] = binding;
 }
 
 template <class P>
 void BufferCache<P>::DisableGraphicsUniformBuffer(size_t stage, u32 index) {
-    auto& current = channel_state->uniform_buffers[stage][index];
+    auto& current = Gfx().uniform_buffers[stage][index];
     if (current.device_addr == 0 && current.size == 0 && current.buffer_id == NULL_BUFFER_ID)
         [[likely]] {
         return;
@@ -512,10 +512,10 @@ void BufferCache<P>::BindHostStageBuffers(size_t stage) {
         VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Uniforms};
         BindHostGraphicsUniformBuffers(stage);
     }
-    if (channel_state->enabled_storage_buffers[stage] != 0) {
+    if (Gfx().enabled_storage_buffers[stage] != 0) {
         BindHostGraphicsStorageBuffers(stage);
     }
-    if (channel_state->enabled_texture_buffers[stage] != 0) {
+    if (Gfx().enabled_texture_buffers[stage] != 0) {
         BindHostGraphicsTextureBuffers(stage);
     }
 }
@@ -538,19 +538,19 @@ void BufferCache<P>::BindHostComputeBuffers() {
 template <class P>
 void BufferCache<P>::SetUniformBuffersState(const std::array<u32, NUM_STAGES>& mask,
                                             const UniformBufferSizes* sizes) {
-    if (channel_state->enabled_uniform_buffer_masks == mask &&
-        channel_state->uniform_buffer_sizes == sizes) [[likely]] {
+    if (Gfx().enabled_uniform_buffer_masks == mask &&
+        Gfx().uniform_buffer_sizes == sizes) [[likely]] {
         return;
     }
-    if (channel_state->enabled_uniform_buffer_masks != mask) {
-        channel_state->fast_bound_uniform_buffers.fill(0);
+    if (Gfx().enabled_uniform_buffer_masks != mask) {
+        Gfx().fast_bound_uniform_buffers.fill(0);
         if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
-            channel_state->dirty_uniform_buffers.fill(~u32{0});
-            channel_state->uniform_buffer_binding_sizes.fill({});
+            Gfx().dirty_uniform_buffers.fill(~u32{0});
+            Gfx().uniform_buffer_binding_sizes.fill({});
         }
-        channel_state->enabled_uniform_buffer_masks = mask;
+        Gfx().enabled_uniform_buffer_masks = mask;
     }
-    channel_state->uniform_buffer_sizes = sizes;
+    Gfx().uniform_buffer_sizes = sizes;
 }
 
 template <class P>
@@ -562,17 +562,17 @@ void BufferCache<P>::SetComputeUniformBufferState(u32 mask,
 
 template <class P>
 void BufferCache<P>::UnbindGraphicsStorageBuffers(size_t stage) {
-    if (channel_state->enabled_storage_buffers[stage] == 0) {
+    if (Gfx().enabled_storage_buffers[stage] == 0) {
         return;
     }
     if constexpr (requires { runtime.ShouldLimitDynamicStorageBuffers(); }) {
         if (runtime.ShouldLimitDynamicStorageBuffers()) {
-            channel_state->total_graphics_storage_buffers -=
-                static_cast<u32>(std::popcount(channel_state->enabled_storage_buffers[stage]));
+            Gfx().total_graphics_storage_buffers -=
+                static_cast<u32>(std::popcount(Gfx().enabled_storage_buffers[stage]));
         }
     }
-    channel_state->enabled_storage_buffers[stage] = 0;
-    channel_state->written_storage_buffers[stage] = 0;
+    Gfx().enabled_storage_buffers[stage] = 0;
+    Gfx().written_storage_buffers[stage] = 0;
 }
 
 template <class P>
@@ -585,11 +585,11 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
         return false;
     }
     const bool already_enabled =
-        ((channel_state->enabled_storage_buffers[stage] >> ssbo_index) & 1U) != 0;
+        ((Gfx().enabled_storage_buffers[stage] >> ssbo_index) & 1U) != 0;
     if constexpr (requires { runtime.ShouldLimitDynamicStorageBuffers(); }) {
         if (runtime.ShouldLimitDynamicStorageBuffers() && !already_enabled) {
             const u32 max_bindings = runtime.GetMaxDynamicStorageBuffers();
-            if (channel_state->total_graphics_storage_buffers >= max_bindings) {
+            if (Gfx().total_graphics_storage_buffers >= max_bindings) {
                 LOG_WARNING(HW_GPU,
                             "Skipping graphics storage buffer {} due to driver limit {}",
                             ssbo_index, max_bindings);
@@ -597,11 +597,11 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
             }
         }
     }
-    channel_state->enabled_storage_buffers[stage] |= 1U << ssbo_index;
-    channel_state->written_storage_buffers[stage] |= (is_written ? 1U : 0U) << ssbo_index;
+    Gfx().enabled_storage_buffers[stage] |= 1U << ssbo_index;
+    Gfx().written_storage_buffers[stage] |= (is_written ? 1U : 0U) << ssbo_index;
     if constexpr (requires { runtime.ShouldLimitDynamicStorageBuffers(); }) {
         if (runtime.ShouldLimitDynamicStorageBuffers() && !already_enabled) {
-            ++channel_state->total_graphics_storage_buffers;
+            ++Gfx().total_graphics_storage_buffers;
         }
     }
 
@@ -611,7 +611,7 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
         // The pointer is an entry of a table the constant buffer points to.
         const GPUVAddr holder = gpu_memory->Read<u64>(ssbo_addr);
         if (holder == 0) {
-            channel_state->storage_buffers[stage][ssbo_index] = NULL_BINDING;
+            Gfx().storage_buffers[stage][ssbo_index] = NULL_BINDING;
             return false;
         }
         ssbo_addr = holder + indirect_offset;
@@ -619,33 +619,33 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
     if (Nx2CbHazardProbe::Enabled()) [[unlikely]] {
         Nx2CbHazardProbe::NoteRead(ssbo_addr, 16, Nx2CbHazardProbe::StoragePointer); // B1 probe
     }
-    channel_state->storage_buffers[stage][ssbo_index] =
+    Gfx().storage_buffers[stage][ssbo_index] =
         StorageBufferBinding(ssbo_addr, cbuf_index, is_written,
                              maxwell3d->GetNativeMacroEngine().native_turing,
                              indirect_offset != ~0U);
-    return (channel_state->storage_buffers[stage][ssbo_index].buffer_id != NULL_BUFFER_ID);
+    return (Gfx().storage_buffers[stage][ssbo_index].buffer_id != NULL_BUFFER_ID);
 }
 
 template <class P>
 void BufferCache<P>::UnbindGraphicsTextureBuffers(size_t stage) {
-    if (channel_state->enabled_texture_buffers[stage] == 0) {
+    if (Gfx().enabled_texture_buffers[stage] == 0) {
         return;
     }
-    channel_state->enabled_texture_buffers[stage] = 0;
-    channel_state->written_texture_buffers[stage] = 0;
-    channel_state->image_texture_buffers[stage] = 0;
+    Gfx().enabled_texture_buffers[stage] = 0;
+    Gfx().written_texture_buffers[stage] = 0;
+    Gfx().image_texture_buffers[stage] = 0;
 }
 
 template <class P>
 void BufferCache<P>::BindGraphicsTextureBuffer(size_t stage, size_t tbo_index, GPUVAddr gpu_addr,
                                                u32 size, PixelFormat format, bool is_written,
                                                bool is_image) {
-    channel_state->enabled_texture_buffers[stage] |= 1U << tbo_index;
-    channel_state->written_texture_buffers[stage] |= (is_written ? 1U : 0U) << tbo_index;
+    Gfx().enabled_texture_buffers[stage] |= 1U << tbo_index;
+    Gfx().written_texture_buffers[stage] |= (is_written ? 1U : 0U) << tbo_index;
     if constexpr (SEPARATE_IMAGE_BUFFERS_BINDINGS) {
-        channel_state->image_texture_buffers[stage] |= (is_image ? 1U : 0U) << tbo_index;
+        Gfx().image_texture_buffers[stage] |= (is_image ? 1U : 0U) << tbo_index;
     }
-    channel_state->texture_buffers[stage][tbo_index] =
+    Gfx().texture_buffers[stage][tbo_index] =
         GetTextureBufferBinding(gpu_addr, size, format);
 }
 
@@ -981,13 +981,13 @@ bool BufferCache<P>::IsRegionCpuModified(DAddr addr, size_t size) {
 
 template <class P>
 void BufferCache<P>::BindHostIndexBuffer() {
-    Buffer& buffer = slot_buffers[channel_state->index_buffer.buffer_id];
-    TouchBuffer(buffer, channel_state->index_buffer.buffer_id);
-    const u32 offset = buffer.Offset(channel_state->index_buffer.device_addr);
-    const u32 size = channel_state->index_buffer.size;
+    Buffer& buffer = slot_buffers[Gfx().index_buffer.buffer_id];
+    TouchBuffer(buffer, Gfx().index_buffer.buffer_id);
+    const u32 offset = buffer.Offset(Gfx().index_buffer.device_addr);
+    const u32 size = Gfx().index_buffer.size;
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     if (draw_state.inline_index_draw_indexes.empty()) {
-        SynchronizeBuffer(buffer, channel_state->index_buffer.device_addr, size);
+        SynchronizeBuffer(buffer, Gfx().index_buffer.device_addr, size);
     } else {
         if constexpr (USE_MEMORY_MAPS_FOR_UPLOADS) {
             auto upload_staging = runtime.UploadStagingBuffer(size);
@@ -1131,7 +1131,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
         bool any_valid{false};
         auto& flags = maxwell3d->DrawDirty();
         for (u32 index = 0; index < NUM_VERTEX_BUFFERS; ++index) {
-            const Binding& binding = channel_state->vertex_buffers[index];
+            const Binding& binding = Gfx().vertex_buffers[index];
             Buffer& buffer = slot_buffers[binding.buffer_id];
             TouchBuffer(buffer, binding.buffer_id);
             SynchronizeBuffer(buffer, binding.device_addr, binding.size);
@@ -1150,7 +1150,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
             for (u32 index = host_bindings.min_index; index < host_bindings.max_index; index++) {
                 flags[Dirty::VertexBuffer0 + index] = false;
 
-                const Binding& binding = channel_state->vertex_buffers[index];
+                const Binding& binding = Gfx().vertex_buffers[index];
                 Buffer& buffer = slot_buffers[binding.buffer_id];
 
                 const u32 stride = maxwell3d->DrawRegs().vertex_streams[index].stride;
@@ -1175,19 +1175,19 @@ void BufferCache<P>::BindHostDrawIndirectBuffers() {
         SynchronizeBuffer(buffer, binding.device_addr, binding.size);
     };
     if (current_draw_indirect->include_count) {
-        bind_buffer(channel_state->count_buffer_binding);
+        bind_buffer(Gfx().count_buffer_binding);
     }
-    bind_buffer(channel_state->indirect_buffer_binding);
+    bind_buffer(Gfx().indirect_buffer_binding);
 }
 
 template <class P>
 void BufferCache<P>::BindHostGraphicsUniformBuffers(size_t stage) {
     u32 dirty = ~0U;
     if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
-        dirty = std::exchange(channel_state->dirty_uniform_buffers[stage], 0);
+        dirty = std::exchange(Gfx().dirty_uniform_buffers[stage], 0);
     }
     u32 binding_index = 0;
-    ForEachEnabledBit(channel_state->enabled_uniform_buffer_masks[stage], [&](u32 index) {
+    ForEachEnabledBit(Gfx().enabled_uniform_buffer_masks[stage], [&](u32 index) {
         const bool needs_bind = ((dirty >> index) & 1) != 0;
         BindHostGraphicsUniformBuffer(stage, index, binding_index, needs_bind);
         if constexpr (NEEDS_BIND_UNIFORM_INDEX) {
@@ -1198,12 +1198,12 @@ void BufferCache<P>::BindHostGraphicsUniformBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 binding_index, bool needs_bind) {
-    ++channel_state->uniform_cache_shots[0];
+    ++Gfx().uniform_cache_shots[0];
     // Bank 24 (root table 0, NVN2's push constants) is read from bank 17, which such games do not
     // bind: stream the table's current words as that buffer.
-    if (index == 17 && maxwell3d->root_tables.loaded && channel_state->uniform_buffers[stage][index].size == 0) {
+    if (index == 17 && maxwell3d->root_tables.loaded && Gfx().uniform_buffers[stage][index].size == 0) {
         const auto& words = maxwell3d->root_tables.tables[0];
-        const u32 size = (*channel_state->uniform_buffer_sizes)[stage][index];
+        const u32 size = (*Gfx().uniform_buffer_sizes)[stage][index];
         const u32 copied = (std::min)(size, static_cast<u32>(sizeof(words)));
         if constexpr (IS_OPENGL) {
             std::array<u8, sizeof(words)> data{};
@@ -1215,13 +1215,13 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             std::memset(span.data(), 0, span.size());
             std::memcpy(span.data(), words.data(), copied);
         }
-        channel_state->fast_bound_uniform_buffers[stage] |= 1u << binding_index;
-        channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
+        Gfx().fast_bound_uniform_buffers[stage] |= 1u << binding_index;
+        Gfx().uniform_buffer_binding_sizes[stage][binding_index] = size;
         return;
     }
-    const Binding& binding = channel_state->uniform_buffers[stage][index];
+    const Binding& binding = Gfx().uniform_buffers[stage][index];
     const DAddr device_addr = binding.device_addr;
-    const u32 size = (std::min)(binding.size, (*channel_state->uniform_buffer_sizes)[stage][index]);
+    const u32 size = (std::min)(binding.size, (*Gfx().uniform_buffer_sizes)[stage][index]);
     Buffer& buffer = slot_buffers[binding.buffer_id];
     TouchBuffer(buffer, binding.buffer_id);
     const bool has_host_buffer = binding.buffer_id != NULL_BUFFER_ID;
@@ -1252,7 +1252,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                              gpu_memory->UsesNativeTiling() &&
                              !memory_tracker.IsRegionGpuModified(device_addr, size);
     if (bank_mode != '0' && native_bank &&
-        (bank_mode == '3' || (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000) &&
+        (bank_mode == '3' || (*Gfx().uniform_buffer_sizes)[stage][index] == 0x10000) &&
         (bank_mode == '2' || bank_mode == '3' ||
          native_indirect_uniforms_this_frame.insert(device_addr).second)) {
         // The bank size is only an upper limit: stop at the end of the mapped memory.
@@ -1285,11 +1285,11 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                 // Fast path for Nvidia
                 const bool should_fast_bind =
                     !HasFastUniformBufferBound(stage, binding_index) ||
-                    channel_state->uniform_buffer_binding_sizes[stage][binding_index] != size;
+                    Gfx().uniform_buffer_binding_sizes[stage][binding_index] != size;
                 if (should_fast_bind) {
                     // We only have to bind when the currently bound buffer is not the fast version
-                    channel_state->fast_bound_uniform_buffers[stage] |= 1u << binding_index;
-                    channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
+                    Gfx().fast_bound_uniform_buffers[stage] |= 1u << binding_index;
+                    Gfx().uniform_buffer_binding_sizes[stage][binding_index] = size;
                     runtime.BindFastUniformBuffer(stage, binding_index, size);
                 }
                 const auto span = ImmediateBufferWithData(device_addr, size);
@@ -1297,8 +1297,8 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                 return;
             }
         }
-        channel_state->fast_bound_uniform_buffers[stage] |= 1u << binding_index;
-        channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
+        Gfx().fast_bound_uniform_buffers[stage] |= 1u << binding_index;
+        Gfx().uniform_buffer_binding_sizes[stage][binding_index] = size;
         // Stream buffer path to avoid stalling on non-Nvidia drivers or Vulkan
         bool streamed = false;
         if constexpr (!IS_OPENGL && VideoCommon::StreamUniformReusable<Runtime>) {
@@ -1318,13 +1318,13 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     }
     // Classic cached path
     if (SynchronizeBuffer(buffer, device_addr, size)) {
-        ++channel_state->uniform_cache_hits[0];
+        ++Gfx().uniform_cache_hits[0];
     }
     // Skip binding if it's not needed and if the bound buffer is not the fast version
     // This exists to avoid instances where the fast buffer is bound and a GPU write happens
     needs_bind |= HasFastUniformBufferBound(stage, binding_index);
     if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
-        needs_bind |= channel_state->uniform_buffer_binding_sizes[stage][binding_index] != size;
+        needs_bind |= Gfx().uniform_buffer_binding_sizes[stage][binding_index] != size;
     }
     if (!needs_bind) {
         return;
@@ -1332,10 +1332,10 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     if constexpr (IS_OPENGL) {
         // Mark the index as dirty if offset doesn't match
         const bool is_copy_bind = offset != 0 && !runtime.SupportsNonZeroUniformOffset();
-        channel_state->dirty_uniform_buffers[stage] |= (is_copy_bind ? 1U : 0U) << index;
+        Gfx().dirty_uniform_buffers[stage] |= (is_copy_bind ? 1U : 0U) << index;
     }
     if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
-        channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
+        Gfx().uniform_buffer_binding_sizes[stage][binding_index] = size;
     }
     buffer.MarkUsage(offset, size);
     if constexpr (NEEDS_BIND_UNIFORM_INDEX) {
@@ -1343,7 +1343,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     } else {
         runtime.BindUniformBuffer(buffer, offset, size);
     }
-    channel_state->fast_bound_uniform_buffers[stage] &= ~(1u << binding_index);
+    Gfx().fast_bound_uniform_buffers[stage] &= ~(1u << binding_index);
 }
 
 template <class P>
@@ -1419,9 +1419,9 @@ bool BufferCache<P>::BindMultiRangeStorage(const Binding& binding, bool is_writt
 template <class P>
 void BufferCache<P>::BindHostGraphicsStorageBuffers(size_t stage) {
     u32 binding_index = 0;
-    ForEachEnabledBit(channel_state->enabled_storage_buffers[stage], [&](u32 index) {
-        const Binding& binding = channel_state->storage_buffers[stage][index];
-        const bool is_written = ((channel_state->written_storage_buffers[stage] >> index) & 1) != 0;
+    ForEachEnabledBit(Gfx().enabled_storage_buffers[stage], [&](u32 index) {
+        const Binding& binding = Gfx().storage_buffers[stage][index];
+        const bool is_written = ((Gfx().written_storage_buffers[stage] >> index) & 1) != 0;
         if (BindMultiRangeStorage(binding, is_written, graphics_segments)) {
             return;
         }
@@ -1448,13 +1448,13 @@ void BufferCache<P>::BindHostGraphicsStorageBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::BindHostGraphicsTextureBuffers(size_t stage) {
-    ForEachEnabledBit(channel_state->enabled_texture_buffers[stage], [&](u32 index) {
-        const TextureBufferBinding& binding = channel_state->texture_buffers[stage][index];
+    ForEachEnabledBit(Gfx().enabled_texture_buffers[stage], [&](u32 index) {
+        const TextureBufferBinding& binding = Gfx().texture_buffers[stage][index];
         Buffer& buffer = slot_buffers[binding.buffer_id];
         const u32 size = binding.size;
         SynchronizeBuffer(buffer, binding.device_addr, size);
 
-        const bool is_written = ((channel_state->written_texture_buffers[stage] >> index) & 1) != 0;
+        const bool is_written = ((Gfx().written_texture_buffers[stage] >> index) & 1) != 0;
         if (is_written) {
             MarkWrittenBuffer(binding.buffer_id, binding.device_addr, size);
         }
@@ -1463,7 +1463,7 @@ void BufferCache<P>::BindHostGraphicsTextureBuffers(size_t stage) {
         const PixelFormat format = binding.format;
         buffer.MarkUsage(offset, size);
         if constexpr (SEPARATE_IMAGE_BUFFERS_BINDINGS) {
-            if (((channel_state->image_texture_buffers[stage] >> index) & 1) != 0) {
+            if (((Gfx().image_texture_buffers[stage] >> index) & 1) != 0) {
                 runtime.BindImageBuffer(buffer, offset, size, format);
             } else {
                 runtime.BindTextureBuffer(buffer, offset, size, format);
@@ -1481,7 +1481,7 @@ void BufferCache<P>::BindHostTransformFeedbackBuffers() {
     }
     HostBindings<typename P::Buffer> host_bindings;
     for (u32 index = 0; index < NUM_TRANSFORM_FEEDBACK_BUFFERS; ++index) {
-        const Binding& binding = channel_state->transform_feedback_buffers[index];
+        const Binding& binding = Gfx().transform_feedback_buffers[index];
         const auto& control = maxwell3d->DrawRegs().transform_feedback.controls[index];
         const bool has_layout = control.varying_count != 0 || control.stride != 0;
 
@@ -1511,8 +1511,8 @@ template <class P>
 void BufferCache<P>::BindHostComputeUniformBuffers() {
     if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
         // Mark all uniform buffers as dirty
-        channel_state->dirty_uniform_buffers.fill(~u32{0});
-        channel_state->fast_bound_uniform_buffers.fill(0);
+        Gfx().dirty_uniform_buffers.fill(~u32{0});
+        Gfx().fast_bound_uniform_buffers.fill(0);
     }
     u32 binding_index = 0;
     ForEachEnabledBit(channel_state->enabled_compute_uniform_buffer_mask, [&](u32 index) {
@@ -1674,7 +1674,7 @@ void BufferCache<P>::UpdateIndexBuffer() {
             slot_buffers.erase(inline_buffer_id);
             inline_buffer_id = CreateBuffer(0, buffer_size, false);
         }
-        channel_state->index_buffer = Binding{
+        Gfx().index_buffer = Binding{
             .device_addr = 0,
             .size = inline_index_size,
             .buffer_id = inline_buffer_id,
@@ -1689,10 +1689,10 @@ void BufferCache<P>::UpdateIndexBuffer() {
     const u32 draw_size = (index_buffer_ref.count + index_buffer_ref.first) * u32(index_buffer_ref.FormatSizeInBytes());
     const u32 size = (std::min)(address_size, draw_size);
     if (size == 0 || !device_addr) {
-        channel_state->index_buffer = NULL_BINDING;
+        Gfx().index_buffer = NULL_BINDING;
         return;
     }
-    channel_state->index_buffer = Binding{
+    Gfx().index_buffer = Binding{
         .device_addr = *device_addr,
         .size = size,
         .buffer_id = FindBuffer(*device_addr, size, false),
@@ -1731,7 +1731,7 @@ void BufferCache<P>::UpdateVertexBuffer(u32 index) {
     const u32 address_size = static_cast<u32>(gpu_addr_end - gpu_addr_begin);
     u32 size = address_size; // TODO: Analyze stride and number of vertices
     if (array.enable == 0 || size == 0 || !device_addr) {
-        channel_state->vertex_buffers[index] = NULL_BINDING;
+        Gfx().vertex_buffers[index] = NULL_BINDING;
         UpdateVertexBufferSlot(index, NULL_BINDING);
         return;
     }
@@ -1744,7 +1744,7 @@ void BufferCache<P>::UpdateVertexBuffer(u32 index) {
         .size = size,
         .buffer_id = buffer_id,
     };
-    channel_state->vertex_buffers[index] = binding;
+    Gfx().vertex_buffers[index] = binding;
     UpdateVertexBufferSlot(index, binding);
 }
 
@@ -1764,27 +1764,27 @@ void BufferCache<P>::UpdateDrawIndirect() {
     };
     if (current_draw_indirect->include_count) {
         update(current_draw_indirect->count_start_address, sizeof(u32),
-               channel_state->count_buffer_binding);
+               Gfx().count_buffer_binding);
     }
     update(current_draw_indirect->indirect_start_address, current_draw_indirect->buffer_size,
-           channel_state->indirect_buffer_binding);
+           Gfx().indirect_buffer_binding);
 }
 
 template <class P>
 void BufferCache<P>::UpdateUniformBuffers(size_t stage) {
     Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::BindingState); // B2 cache guard
-    if (channel_state->enabled_uniform_buffer_masks[stage] == 0) [[likely]] {
+    if (Gfx().enabled_uniform_buffer_masks[stage] == 0) [[likely]] {
         return;
     }
-    ForEachEnabledBit(channel_state->enabled_uniform_buffer_masks[stage], [&](u32 index) {
-        Binding& binding = channel_state->uniform_buffers[stage][index];
+    ForEachEnabledBit(Gfx().enabled_uniform_buffer_masks[stage], [&](u32 index) {
+        Binding& binding = Gfx().uniform_buffers[stage][index];
         if (binding.buffer_id) {
             // Already updated
             return;
         }
         // Mark as dirty
         if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
-            channel_state->dirty_uniform_buffers[stage] |= 1U << index;
+            Gfx().dirty_uniform_buffers[stage] |= 1U << index;
         }
         // Resolve buffer
         binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
@@ -1794,15 +1794,15 @@ void BufferCache<P>::UpdateUniformBuffers(size_t stage) {
 template <class P>
 void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
     Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::BindingState); // B2 cache guard
-    if (channel_state->enabled_storage_buffers[stage] == 0) [[likely]] {
+    if (Gfx().enabled_storage_buffers[stage] == 0) [[likely]] {
         return;
     }
-    ForEachEnabledBit(channel_state->enabled_storage_buffers[stage], [&](u32 index) {
+    ForEachEnabledBit(Gfx().enabled_storage_buffers[stage], [&](u32 index) {
         // Resolve buffer
-        Binding& binding = channel_state->storage_buffers[stage][index];
+        Binding& binding = Gfx().storage_buffers[stage][index];
         const BufferId buffer_id = FindBuffer(binding.device_addr, binding.size, false);
         binding.buffer_id = buffer_id;
-        const bool is_written = ((channel_state->written_storage_buffers[stage] >> index) & 1) != 0;
+        const bool is_written = ((Gfx().written_storage_buffers[stage] >> index) & 1) != 0;
         ResolveMultiRangeStorage(binding, is_written, graphics_segments);
     });
 }
@@ -1810,11 +1810,11 @@ void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
 template <class P>
 void BufferCache<P>::UpdateTextureBuffers(size_t stage) {
     Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::BindingState); // B2 cache guard
-    if (channel_state->enabled_texture_buffers[stage] == 0) [[likely]] {
+    if (Gfx().enabled_texture_buffers[stage] == 0) [[likely]] {
         return;
     }
-    ForEachEnabledBit(channel_state->enabled_texture_buffers[stage], [&](u32 index) {
-        Binding& binding = channel_state->texture_buffers[stage][index];
+    ForEachEnabledBit(Gfx().enabled_texture_buffers[stage], [&](u32 index) {
+        Binding& binding = Gfx().texture_buffers[stage][index];
         binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
     });
 }
@@ -1837,11 +1837,11 @@ void BufferCache<P>::UpdateTransformFeedbackBuffer(u32 index) {
     const u32 size = binding.size;
     const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
     if (binding.enable == 0 || size == 0 || !device_addr) {
-        channel_state->transform_feedback_buffers[index] = NULL_BINDING;
+        Gfx().transform_feedback_buffers[index] = NULL_BINDING;
         return;
     }
     const BufferId buffer_id = FindBuffer(*device_addr, size, false);
-    channel_state->transform_feedback_buffers[index] = Binding{
+    Gfx().transform_feedback_buffers[index] = Binding{
         .device_addr = *device_addr,
         .size = size,
         .buffer_id = buffer_id,
@@ -2642,22 +2642,22 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
         std::ranges::for_each(bindings, scalar_replace);
     };
 
-    if (channel_state->index_buffer.buffer_id == buffer_id) {
-        channel_state->index_buffer.buffer_id = BufferId{};
+    if (Gfx().index_buffer.buffer_id == buffer_id) {
+        Gfx().index_buffer.buffer_id = BufferId{};
         dirty_index = true;
     }
 
-    for (u32 index = 0; index < channel_state->vertex_buffers.size(); index++) {
-        auto& binding = channel_state->vertex_buffers[index];
+    for (u32 index = 0; index < Gfx().vertex_buffers.size(); index++) {
+        auto& binding = Gfx().vertex_buffers[index];
         if (binding.buffer_id == buffer_id) {
             binding.buffer_id = BufferId{};
             UpdateVertexBufferSlot(index, binding);
             dirty_vertex_buffers.push_back(index);
         }
     }
-    std::ranges::for_each(channel_state->uniform_buffers, replace);
-    std::ranges::for_each(channel_state->storage_buffers, replace);
-    replace(channel_state->transform_feedback_buffers);
+    std::ranges::for_each(Gfx().uniform_buffers, replace);
+    std::ranges::for_each(Gfx().storage_buffers, replace);
+    replace(Gfx().transform_feedback_buffers);
     replace(channel_state->compute_uniform_buffers);
     replace(channel_state->compute_storage_buffers);
 
@@ -2677,8 +2677,8 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     slot_buffers.erase(buffer_id);
 
     if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
-        channel_state->dirty_uniform_buffers.fill(~u32{0});
-        channel_state->uniform_buffer_binding_sizes.fill({});
+        Gfx().dirty_uniform_buffers.fill(~u32{0});
+        Gfx().uniform_buffer_binding_sizes.fill({});
     }
 
     auto& flags = maxwell3d->DrawDirty();
@@ -2840,20 +2840,20 @@ std::span<u8> BufferCache<P>::ImmediateBuffer(size_t wanted_capacity) {
 
 template <class P>
 bool BufferCache<P>::HasFastUniformBufferBound(size_t stage, u32 binding_index) const noexcept {
-    return ((channel_state->fast_bound_uniform_buffers[stage] >> binding_index) & 1u) != 0;
+    return ((Gfx().fast_bound_uniform_buffers[stage] >> binding_index) & 1u) != 0;
 }
 
 template <class P>
 std::pair<typename BufferCache<P>::Buffer*, u32> BufferCache<P>::GetDrawIndirectCount() {
-    auto& buffer = slot_buffers[channel_state->count_buffer_binding.buffer_id];
-    return std::make_pair(&buffer, buffer.Offset(channel_state->count_buffer_binding.device_addr));
+    auto& buffer = slot_buffers[Gfx().count_buffer_binding.buffer_id];
+    return std::make_pair(&buffer, buffer.Offset(Gfx().count_buffer_binding.device_addr));
 }
 
 template <class P>
 std::pair<typename BufferCache<P>::Buffer*, u32> BufferCache<P>::GetDrawIndirectBuffer() {
-    auto& buffer = slot_buffers[channel_state->indirect_buffer_binding.buffer_id];
+    auto& buffer = slot_buffers[Gfx().indirect_buffer_binding.buffer_id];
     return std::make_pair(&buffer,
-                          buffer.Offset(channel_state->indirect_buffer_binding.device_addr));
+                          buffer.Offset(Gfx().indirect_buffer_binding.device_addr));
 }
 
 } // namespace VideoCommon
