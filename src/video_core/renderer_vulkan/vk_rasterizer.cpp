@@ -297,6 +297,7 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
 }
 
 RasterizerVulkan::~RasterizerVulkan() {
+    Nx2ShadowShutdown(); // P2 shadow preparer (fork mkw60)
     VideoCommon::GpuSplit::Get().SetIdleHook(nullptr, nullptr);
     scheduler.WaitWorker();
     scheduler.Finish();
@@ -334,7 +335,7 @@ bool RasterizerVulkan::TryNx2IndirectReset() {
     std::array<u64, 2> descriptor{};
     gpu_memory->ReadBlock(cbuf.address + 0x110, descriptor.data(), sizeof(descriptor));
     const u64 list = descriptor[0];
-    const auto& draw = maxwell3d->draw_manager.draw_state;
+    const auto& draw = maxwell3d->DrawStateView();
     const u64 first = draw.vertex_buffer.first;
     const u64 count = draw.vertex_buffer.count;
     const auto range = VideoCommon::IndirectResetRange(list, static_cast<u32>(descriptor[1]),
@@ -778,7 +779,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         // should have written. Past 16M vertices they are garbage: building the quad index
         // buffer for one threw out of the GPU thread and ended the process (Hyrule Warriors:
         // Age of Imprisonment, entering a new area), and indexed ones read far out of bounds.
-        const auto& state = maxwell3d->draw_manager.draw_state;
+        const auto& state = maxwell3d->DrawStateView();
         const u64 first = is_indexed ? state.index_buffer.first : state.vertex_buffer.first;
         const u64 count = is_indexed ? state.index_buffer.count : state.vertex_buffer.count;
         constexpr u64 MaxVertices = u64{1} << 24;
@@ -792,8 +793,8 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         }
     }
     TraceWindowTarget(*maxwell3d, *gpu_memory, is_indexed ? "draw-indexed" : "draw",
-                      is_indexed ? maxwell3d->draw_manager.draw_state.index_buffer.count
-                                 : maxwell3d->draw_manager.draw_state.vertex_buffer.count);
+                      is_indexed ? maxwell3d->DrawStateView().index_buffer.count
+                                 : maxwell3d->DrawStateView().vertex_buffer.count);
     // EDEN_NX2_CB24_TRACE: for draws whose vertex shader reads bank 24, show the inline
     // constant buffer upload target (CB_ADDRESS) and its first words.
     if (static const bool trace = std::getenv("EDEN_NX2_CB24_TRACE") != nullptr; trace) {
@@ -887,7 +888,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         if (std::find(skip_list.begin(), skip_list.end(), vs) != skip_list.end()) return;
     }
     if (VideoCommon::Nx2Diag::Active()) {
-        const auto& draw_state = maxwell3d->draw_manager.draw_state;
+        const auto& draw_state = maxwell3d->DrawStateView();
         g_diag_draw = {is_indexed ? "indexed" : "draw",
                        is_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count,
                        instance_count};
@@ -911,7 +912,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         }
     }
     PrepareDraw(is_indexed, [this, is_indexed, instance_count] {
-        const auto& draw_state = maxwell3d->draw_manager.draw_state;
+        const auto& draw_state = maxwell3d->DrawStateView();
         const u32 num_instances{instance_count};
         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
 
@@ -2164,7 +2165,7 @@ void RasterizerVulkan::UpdateDynamicStates() {
     // multi-threaded preparer must keep that per thread instead.
     auto& regs = const_cast<Tegra::Engines::Maxwell3D::Regs&>(maxwell3d->DrawRegs());
     auto& flags = maxwell3d->DrawDirty();
-    const auto topology = maxwell3d->draw_manager.draw_state.topology;
+    const auto topology = maxwell3d->DrawStateView().topology;
     const bool topology_changed = state_tracker.ChangePrimitiveTopology(topology);
     if (topology_changed) {
         flags[Dirty::DepthBiasEnable] = true;
@@ -2619,7 +2620,7 @@ void RasterizerVulkan::UpdatePrimitiveRestartEnable(Tegra::Engines::Maxwell3D::R
     if (device.IsMoltenVK()) {
         enable = true;
     } else if (enable) {
-        const auto topology = MaxwellToVK::PrimitiveTopology(device, maxwell3d->draw_manager.draw_state.topology);
+        const auto topology = MaxwellToVK::PrimitiveTopology(device, maxwell3d->DrawStateView().topology);
         enable = IsPrimitiveRestartSupported(device, topology);
     }
 
@@ -2733,7 +2734,7 @@ void RasterizerVulkan::UpdateDepthBiasEnable(Tegra::Engines::Maxwell3D::Regs& re
         regs.polygon_offset_line_enable,
         regs.polygon_offset_fill_enable,
     };
-    const u32 topology_index = u32(maxwell3d->draw_manager.draw_state.topology);
+    const u32 topology_index = u32(maxwell3d->DrawStateView().topology);
     const u32 enable = enabled_lut[POLYGON_OFFSET_ENABLE_LUT[topology_index]];
     scheduler.Record([enable](vk::CommandBuffer cmdbuf) { cmdbuf.SetDepthBiasEnableEXT(enable != 0); });
 }

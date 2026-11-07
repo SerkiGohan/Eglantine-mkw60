@@ -59,7 +59,8 @@ public:
                  bool use_descriptor_buffer_ = false);
 
     const DescriptorUpdateEntry* UpdateData() const noexcept {
-        return t_reservation == &reservation ? reservation.begin : upload_start;
+        return t_reservation != nullptr && t_reservation->owner == this ? t_reservation->begin
+                                                                         : upload_start;
     }
 
     /// B2 step 3, piece 3 (fork mkw60, EDEN_NX2_DESC_WRITER=1): a draw reserves exactly the
@@ -72,6 +73,7 @@ public:
         DescriptorUpdateEntry* begin{};
         DescriptorUpdateEntry* cursor{};
         DescriptorUpdateEntry* end{};
+        const UpdateDescriptorQueue* owner{}; ///< only this queue writes through it
     };
     static inline thread_local Reservation* t_reservation{};
     /// Reserves `entries` for the current draw (call right after Acquire, end with EndReservation).
@@ -82,7 +84,7 @@ public:
     /// returns how many were written (the serial part makes the uniform entries before the
     /// preparation acquires). AddEntries copies such entries into the current draw's range.
     void BeginCapture(DescriptorUpdateEntry* buffer, size_t capacity) noexcept {
-        capture = {buffer, buffer, buffer + capacity};
+        capture = {buffer, buffer, buffer + capacity, this};
         t_reservation = &capture;
     }
     size_t EndCapture() noexcept {
@@ -90,6 +92,18 @@ public:
             t_reservation = nullptr;
         }
         return static_cast<size_t>(capture.cursor - capture.begin);
+    }
+    /// P2: the same with a reservation object of the caller's thread (shadow preparer).
+    void BeginCaptureInto(Reservation& target, DescriptorUpdateEntry* buffer,
+                          size_t capacity) const noexcept {
+        target = {buffer, buffer, buffer + capacity, this};
+        t_reservation = &target;
+    }
+    static size_t EndCaptureFrom(Reservation& target) noexcept {
+        if (t_reservation == &target) {
+            t_reservation = nullptr;
+        }
+        return static_cast<size_t>(target.cursor - target.begin);
     }
     void AddEntries(const DescriptorUpdateEntry* entries, size_t count) noexcept {
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue, count); // B2 cache guard
@@ -161,8 +175,8 @@ public:
 private:
     DescriptorUpdateEntry*& Cursor() noexcept {
         // Only this queue's reservation: compute passes inside a draw use other queues.
-        return t_reservation == &reservation || t_reservation == &capture ? t_reservation->cursor
-                                                                           : payload_cursor;
+        return t_reservation != nullptr && t_reservation->owner == this ? t_reservation->cursor
+                                                                         : payload_cursor;
     }
 
     Reservation reservation{};

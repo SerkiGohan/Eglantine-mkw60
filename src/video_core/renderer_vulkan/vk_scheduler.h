@@ -136,6 +136,9 @@ public:
     template <typename T>
         requires std::is_invocable_v<T, vk::CommandBuffer, vk::CommandBuffer>
     void RecordWithUploadBuffer(T&& command) {
+        if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+            return; // P2 shadow: commands are dropped
+        }
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::SchedulerRecord); // B2 cache guard
         if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
             VideoCommon::GpuSplit::CheckOwner("Scheduler::Record");

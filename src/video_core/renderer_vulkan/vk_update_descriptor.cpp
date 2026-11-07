@@ -65,6 +65,7 @@ void UpdateDescriptorQueue::Reserve(size_t entries) {
     reservation.begin = payload_cursor;
     reservation.cursor = payload_cursor;
     reservation.end = payload_cursor + entries;
+    reservation.owner = this;
     payload_cursor = reservation.end;
     t_reservation = &reservation;
 }

@@ -611,6 +611,9 @@ private:
 
     /// B2 step 3, piece 2: graphics binding state of the current preparer context (the channel's).
     [[nodiscard]] GraphicsBindings& Gfx() noexcept {
+        if (t_gfx_override != nullptr) [[unlikely]] {
+            return *t_gfx_override;
+        }
         return channel_state->contexts[channel_state->active_context];
     }
     [[nodiscard]] const GraphicsBindings& Gfx() const noexcept {
@@ -625,6 +628,14 @@ private:
         }
     }
 public:
+    /// P2: a shadow preparer works on its own copy of the binding state.
+    static inline thread_local GraphicsBindings* t_gfx_override{};
+    [[nodiscard]] const GraphicsBindings& Nx2Bindings() noexcept {
+        return Gfx();
+    }
+    [[nodiscard]] bool Nx2IsDrawIndirect() const noexcept {
+        return current_draw_indirect != nullptr;
+    }
     /// P1 (EDEN_NX2_PREP_SPLIT=1): BindHostStageBuffers in two parts, uniforms (serial part,
     /// resolves them first) and storage/texel buffers (preparation).
     void Nx2BindStageUniforms(size_t stage);

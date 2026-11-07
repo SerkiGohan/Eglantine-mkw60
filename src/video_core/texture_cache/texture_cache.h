@@ -3542,6 +3542,9 @@ void TextureCache<P>::RemoveFramebuffers(std::span<const ImageViewId> removed_vi
 
 template <class P>
 void TextureCache<P>::MarkModification(ImageBase& image) noexcept {
+    if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+        return; // P2 shadow
+    }
     Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::ImageModified); // B2 cache guard
     image.flags |= ImageFlagBits::GpuModified;
     image.modification_tick = ++modification_tick;

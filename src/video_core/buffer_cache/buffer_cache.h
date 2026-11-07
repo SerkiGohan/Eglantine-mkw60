@@ -495,7 +495,7 @@ void BufferCache<P>::BindHostGeometryBuffers(bool is_indexed) {
     if (is_indexed) {
         BindHostIndexBuffer();
     } else if constexpr (!HAS_FULL_INDEX_AND_PRIMITIVE_SUPPORT) {
-        const auto& draw_state = maxwell3d->draw_manager.draw_state;
+        const auto& draw_state = maxwell3d->DrawStateView();
         if (draw_state.topology == Maxwell::PrimitiveTopology::Quads ||
             draw_state.topology == Maxwell::PrimitiveTopology::QuadStrip) {
             runtime.BindQuadIndexBuffer(draw_state.topology, draw_state.vertex_buffer.first,
@@ -1005,7 +1005,7 @@ void BufferCache<P>::BindHostIndexBuffer() {
     TouchBuffer(buffer, Gfx().index_buffer.buffer_id);
     const u32 offset = buffer.Offset(Gfx().index_buffer.device_addr);
     const u32 size = Gfx().index_buffer.size;
-    const auto& draw_state = maxwell3d->draw_manager.draw_state;
+    const auto& draw_state = maxwell3d->DrawStateView();
     if (draw_state.inline_index_draw_indexes.empty()) {
         SynchronizeBuffer(buffer, Gfx().index_buffer.device_addr, size);
     } else {
@@ -1419,6 +1419,10 @@ bool BufferCache<P>::BindMultiRangeStorage(const Binding& binding, bool is_writt
         if (binding.segment_first + binding.segment_count > pool.size()) {
             return false;
         }
+        if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+            Common::Nx2CacheGuard::t_shadow_needs_serial = true; // P2 shadow: combined buffers change state
+            return false;
+        }
         const u64 key = (static_cast<u64>(gpu_memory->GetID()) << 48) ^ binding.gpu_addr;
         runtime.ResetMultiRange();
         for (u32 index = 0; index < binding.segment_count; ++index) {
@@ -1684,7 +1688,7 @@ void BufferCache<P>::UpdateIndexBuffer() {
     Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::BindingState); // B2 cache guard
     // We have to check for the dirty flags and index count
     // The index count is currently changed without updating the dirty flags
-    const auto& draw_state = maxwell3d->draw_manager.draw_state;
+    const auto& draw_state = maxwell3d->DrawStateView();
     const auto& index_buffer_ref = draw_state.index_buffer;
     auto& flags = maxwell3d->DrawDirty();
     if (!flags[Dirty::IndexBuffer]) {
@@ -1915,6 +1919,9 @@ void BufferCache<P>::UpdateComputeTextureBuffers() {
 
 template <class P>
 void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size, bool needs_sync) {
+    if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+        return; // P2 shadow
+    }
     if constexpr (!IS_OPENGL) {
         if (needs_sync) {
             Buffer& buffer = slot_buffers[buffer_id];
@@ -2172,6 +2179,10 @@ BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_com
             }
         }
     }
+    if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+        Common::Nx2CacheGuard::t_shadow_needs_serial = true; // P2 shadow: no new buffers
+        return NULL_BUFFER_ID;
+    }
     return CreateBuffer(device_addr, size, sparse_compatible);
 }
 
@@ -2357,6 +2368,13 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
 template <class P>
 bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::SyncBuffer};
+    if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+        // P2 shadow: only look (ForEachUploadRange would unmark the pages).
+        if (memory_tracker.IsRegionCpuModified(device_addr, size)) {
+            Common::Nx2CacheGuard::t_shadow_needs_serial = true;
+        }
+        return true;
+    }
 #ifdef __ANDROID__
     const bool use_optimized_vertex_buffers = Settings::values.use_optimized_vertex_buffers.GetValue();
 #else

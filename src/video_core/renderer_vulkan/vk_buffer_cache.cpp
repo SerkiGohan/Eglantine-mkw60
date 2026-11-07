@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/nx2_cache_guard.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -631,6 +632,9 @@ bool BufferCacheRuntime::BindMultiRangeStorageBuffer(u64 key, bool is_written) {
 void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat index_format,
                                          u32 base_vertex, u32 num_indices, VkBuffer buffer,
                                          u32 offset, [[maybe_unused]] u32 size) {
+    if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+        return; // P2 shadow: host binding commands
+    }
     VkIndexType vk_index_type = MaxwellToVK::IndexFormat(index_format);
     VkDeviceSize vk_offset = offset;
     VkBuffer vk_buffer = buffer;
@@ -660,6 +664,9 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
 }
 
 void BufferCacheRuntime::BindQuadIndexBuffer(PrimitiveTopology topology, u32 first, u32 count) {
+    if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+        return; // P2 shadow: host binding commands
+    }
     if (count == 0) {
         ReserveNullBuffer();
         scheduler.Record([this](vk::CommandBuffer cmdbuf) {
@@ -678,6 +685,9 @@ void BufferCacheRuntime::BindQuadIndexBuffer(PrimitiveTopology topology, u32 fir
 }
 
 void BufferCacheRuntime::BindVertexBuffer(u32 index, VkBuffer buffer, u32 offset, u32 size, u32 stride) {
+    if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+        return; // P2 shadow: host binding commands
+    }
     if (index >= device.GetMaxVertexInputBindings()) {
         return;
     }
@@ -712,6 +722,9 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, VkBuffer buffer, u32 offset
 }
 
 void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bindings) {
+    if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+        return; // P2 shadow: host binding commands
+    }
     boost::container::static_vector<VkBuffer, VideoCommon::NUM_VERTEX_BUFFERS> buffer_handles(bindings.buffers.size());
     for (u32 i = 0; i < bindings.buffers.size(); ++i) {
         auto handle = bindings.buffers[i]->Handle();
@@ -764,6 +777,9 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bi
 
 void BufferCacheRuntime::BindTransformFeedbackBuffer(u32 index, VkBuffer buffer, u32 offset,
                                                      u32 size) {
+    if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+        return; // P2 shadow: host binding commands
+    }
     if (!device.IsExtTransformFeedbackSupported()) {
         // Already logged in the rasterizer
         return;
@@ -784,6 +800,9 @@ void BufferCacheRuntime::BindTransformFeedbackBuffer(u32 index, VkBuffer buffer,
 }
 
 void BufferCacheRuntime::BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>& bindings) {
+    if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+        return; // P2 shadow: host binding commands
+    }
     if (!device.IsExtTransformFeedbackSupported()) {
         // Already logged in the rasterizer
         return;

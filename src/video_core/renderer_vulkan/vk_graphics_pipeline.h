@@ -74,6 +74,9 @@ class RescalingPushConstant;
 class RenderAreaPushConstant;
 class Scheduler;
 
+/// P2 (fork mkw60): stops the shadow preparer thread (RasterizerVulkan destructor).
+void Nx2ShadowShutdown();
+
 class GraphicsPipeline {
     static constexpr size_t NUM_STAGES = Tegra::Engines::Maxwell3D::Regs::MaxShaderStage;
 

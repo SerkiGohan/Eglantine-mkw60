@@ -3295,6 +3295,12 @@ public:
     };
 
     DrawManager draw_manager;
+    /// P2 (fork mkw60): the draw state the draw preparation reads (DrawStateView); a frozen copy while
+    /// a shadow preparer works on another thread, the live state otherwise.
+    static inline thread_local const DrawManager::State* t_draw_state{};
+    [[nodiscard]] const DrawManager::State& DrawStateView() const {
+        return t_draw_state != nullptr ? *t_draw_state : draw_manager.draw_state;
+    }
 
     GPUVAddr GetMacroAddress(size_t index) const {
         size_t base = 0;

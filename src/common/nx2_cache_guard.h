@@ -56,6 +56,12 @@ struct Data {
 };
 
 inline thread_local u32 t_zone = NoZone;
+
+/// P2 (fork mkw60): set on the shadow preparer thread. Shared caches must not change there:
+/// uploads, new buffers, written-range marks, image modification marks and host commands are
+/// skipped; whatever would have been needed sets t_shadow_needs_serial.
+inline thread_local bool t_shadow_prep = false;
+inline thread_local bool t_shadow_needs_serial = false;
 inline thread_local Data t_data;
 
 /// Counts a write at `site` in the current draw zone (nothing outside draws).

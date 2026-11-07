@@ -6,6 +6,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <atomic>
+#include <thread>
+#include <mutex>
+#include <functional>
+#include <deque>
+#include <condition_variable>
 #include <bit>
 #include <cstring>
 #include <iostream>
@@ -19,6 +25,8 @@
 
 #include "common/bit_field.h"
 #include "common/scope_exit.h"
+#include "common/thread.h"
+#include "common/lru_cache.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -457,7 +465,205 @@ void Nx2NotePrepSplit(const VideoCommon::Nx2MutationProbe::Counters& before, siz
     stats = {};
     stats.last_report = now;
 }
+
+/// P2 (EDEN_NX2_PREP_SHADOW=N, with EDEN_NX2_PREP_SPLIT=1): every Nth draw a second thread runs the
+/// preparation again from a frozen copy of its inputs (registers, draw state, dirty flags, binding
+/// state, image views, samplers, uniform entries), as a fresh preparer, and compares its
+/// descriptor entries and resolved bindings with the real ones. Shared caches stay unchanged
+/// there (Common::Nx2CacheGuard::t_shadow_prep); this first version holds the cache locks.
+u32 Nx2ShadowEvery() {
+    static const u32 every = [] {
+        const char* value = std::getenv("EDEN_NX2_PREP_SHADOW");
+        if (value == nullptr || value[0] < '1' || value[0] > '9') {
+            return 0U;
+        }
+        const unsigned long parsed = std::strtoul(value, nullptr, 10);
+        return parsed <= 1 ? 32U : static_cast<u32>(parsed);
+    }();
+    return every;
+}
+
+constexpr size_t NX2_SHADOW_ENTRIES = 512;
+
+struct Nx2ShadowJob {
+    std::function<void(Nx2ShadowJob&)> run;
+    std::unique_ptr<Tegra::Engines::Maxwell3D::Regs> regs;
+    Tegra::Engines::Maxwell3D::DrawManager::State draw_state;
+    Tegra::Engines::Maxwell3D::DirtyState::Flags dirty;
+    VideoCommon::GraphicsBindings bindings;          ///< inputs when the preparation starts
+    VideoCommon::GraphicsBindings expected_bindings; ///< the real context after the preparation
+    std::vector<VideoCommon::ImageViewInOut> views;
+    std::vector<VideoCommon::SamplerId> samplers;
+    std::array<DescriptorUpdateEntry, 5 * 18 + 6> uniform_entries;
+    std::array<u32, 5> uniform_begin{};
+    std::array<u32, 5> uniform_end{};
+    std::vector<DescriptorUpdateEntry> expected_entries;
+    bool is_indexed{};
+};
+
+struct Nx2ShadowStats {
+    u64 jobs{}, aborted{}, compared{}, count_mismatch{}, entry_mismatch{}, binding_mismatch{};
+    u32 details{};
+    s64 last_report{};
+};
+
+class Nx2ShadowWorker {
+public:
+    static Nx2ShadowWorker& Get() {
+        static Nx2ShadowWorker worker;
+        return worker;
+    }
+    ~Nx2ShadowWorker() {
+        Stop();
+    }
+    void Push(std::unique_ptr<Nx2ShadowJob> job) {
+        std::scoped_lock lock{mutex};
+        if (stopped) {
+            return;
+        }
+        if (queue.size() >= 64) {
+            dropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        queue.push_back(std::move(job));
+        if (!thread.joinable()) {
+            thread = std::thread([this] { Run(); });
+        }
+        condvar.notify_one();
+    }
+    void Stop() {
+        {
+            std::scoped_lock lock{mutex};
+            stopped = true;
+            queue.clear();
+        }
+        condvar.notify_all();
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+    Nx2ShadowStats stats; ///< shadow thread only
+    std::atomic<u64> dropped{};
+
+private:
+    void Run() {
+        Common::SetCurrentThreadName("Nx2Shadow");
+        for (;;) {
+            std::unique_ptr<Nx2ShadowJob> job;
+            {
+                std::unique_lock lock{mutex};
+                condvar.wait(lock, [this] { return stopped || !queue.empty(); });
+                if (stopped) {
+                    return;
+                }
+                job = std::move(queue.front());
+                queue.pop_front();
+            }
+            job->run(*job);
+        }
+    }
+    std::mutex mutex;
+    std::condition_variable condvar;
+    std::deque<std::unique_ptr<Nx2ShadowJob>> queue;
+    std::thread thread;
+    bool stopped{};
+};
+
+bool Nx2SameBinding(const VideoCommon::Binding& a, const VideoCommon::Binding& b) {
+    return a.device_addr == b.device_addr && a.size == b.size && a.buffer_id == b.buffer_id;
+}
+
+/// Compares the shadow's results with the real ones and logs every ~10 s (shadow thread).
+void Nx2ShadowCompare(Nx2ShadowJob& job, const DescriptorUpdateEntry* entries, size_t count,
+                      bool needs_serial) {
+    auto& stats = Nx2ShadowWorker::Get().stats;
+    ++stats.jobs;
+    if (needs_serial) {
+        ++stats.aborted;
+    } else {
+        ++stats.compared;
+        std::string detail;
+        if (count != job.expected_entries.size()) {
+            ++stats.count_mismatch;
+            detail = fmt::format("entries {} instead of {}", count, job.expected_entries.size());
+        } else {
+            for (size_t i = 0; i < count; ++i) {
+                // The first 20 bytes hold every field of all entry kinds (the rest is padding).
+                if (std::memcmp(&entries[i], &job.expected_entries[i], 20) != 0) {
+                    ++stats.entry_mismatch;
+                    detail = fmt::format("entry {} of {} differs", i, count);
+                    break;
+                }
+            }
+        }
+        const auto& got = job.bindings;
+        const auto& want = job.expected_bindings;
+        bool bindings_equal = !job.is_indexed || Nx2SameBinding(got.index_buffer, want.index_buffer);
+        for (size_t i = 0; i < got.vertex_buffers.size() && bindings_equal; ++i) {
+            if (job.regs->vertex_streams[i].enable != 0 &&
+                !Nx2SameBinding(got.vertex_buffers[i], want.vertex_buffers[i])) {
+                bindings_equal = false;
+                detail += fmt::format(" vertex buffer {}", i);
+            }
+        }
+        for (size_t stage = 0; stage < 5 && bindings_equal; ++stage) {
+            for (u32 mask = want.enabled_storage_buffers[stage]; mask != 0; mask &= mask - 1) {
+                const u32 index = static_cast<u32>(std::countr_zero(mask));
+                if (!Nx2SameBinding(got.storage_buffers[stage][index],
+                                    want.storage_buffers[stage][index])) {
+                    bindings_equal = false;
+                    detail += fmt::format(" SSBO {}/{}", stage, index);
+                    break;
+                }
+            }
+            for (u32 mask = want.enabled_texture_buffers[stage]; mask != 0 && bindings_equal;
+                 mask &= mask - 1) {
+                const u32 index = static_cast<u32>(std::countr_zero(mask));
+                if (!Nx2SameBinding(got.texture_buffers[stage][index],
+                                    want.texture_buffers[stage][index])) {
+                    bindings_equal = false;
+                    detail += fmt::format(" Texel {}/{}", stage, index);
+                }
+            }
+        }
+        if (!bindings_equal) {
+            ++stats.binding_mismatch;
+        }
+        if (!detail.empty() && stats.details < 4) {
+            ++stats.details;
+            LOG_WARNING(Render_Vulkan, "Prep shadow mismatch: {}", detail);
+        }
+    }
+    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    if (stats.last_report == 0) {
+        stats.last_report = now;
+        return;
+    }
+    if (now - stats.last_report < 10'000'000'000LL) {
+        return;
+    }
+    const double seconds = static_cast<double>(now - stats.last_report) / 1e9;
+    LOG_INFO(Render_Vulkan,
+             "Prep shadow: jobs {:.0f}/s (dropped, queue full: {}) | serial needed "
+             "{:.0f}/s | compared {:.0f}/s: count differs {}, entries differ {}, "
+             "bindings differ {}",
+             static_cast<double>(stats.jobs) / seconds,
+             Nx2ShadowWorker::Get().dropped.exchange(0, std::memory_order_relaxed),
+             static_cast<double>(stats.aborted) / seconds,
+             static_cast<double>(stats.compared) / seconds, stats.count_mismatch,
+             stats.entry_mismatch, stats.binding_mismatch);
+    stats = {};
+    stats.last_report = now;
+}
 } // namespace
+
+void Nx2ShadowShutdown() {
+    if (Nx2ShadowEvery() != 0) {
+        Nx2ShadowWorker::Get().Stop();
+    }
+}
 
 template <typename Spec>
 bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
@@ -627,6 +833,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     std::array<u32, 5> split_uniform_begin{};
     std::array<u32, 5> split_uniform_end{};
     VideoCommon::Nx2MutationProbe::Counters split_before{};
+    std::unique_ptr<Nx2ShadowJob> shadow_job;
     if (prep_split) [[unlikely]] {
         {
             Profile::Scope scope{Profile::Zone::RenderTargets};
@@ -653,6 +860,29 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         ASSERT(captured <= split_uniform_entries.size());
         // Preparation from here: what it uploads or creates makes the draw "heavy".
         split_before = VideoCommon::Nx2MutationProbe::t_counters;
+        // P2: inputs of the preparation for the shadow preparer.
+        static u64 shadow_counter = 0;
+        const u32 shadow_every = Nx2ShadowEvery();
+        if (shadow_every != 0 && ++shadow_counter % shadow_every == 0) [[unlikely]] {
+            const auto& draw_state = maxwell3d->DrawStateView();
+            const bool quads = draw_state.topology == Maxwell::PrimitiveTopology::Quads ||
+                               draw_state.topology == Maxwell::PrimitiveTopology::QuadStrip;
+            if (draw_state.inline_index_draw_indexes.empty() && !quads &&
+                regs.transform_feedback_enabled == 0 && !buffer_cache.Nx2IsDrawIndirect() &&
+                num_descriptor_entries <= NX2_SHADOW_ENTRIES) {
+                shadow_job = std::make_unique<Nx2ShadowJob>();
+                shadow_job->regs = std::make_unique<Tegra::Engines::Maxwell3D::Regs>(regs);
+                shadow_job->draw_state = draw_state;
+                shadow_job->dirty = maxwell3d->DrawDirty();
+                shadow_job->bindings = buffer_cache.Nx2Bindings();
+                shadow_job->views.assign(views.begin(), views.end());
+                shadow_job->samplers.assign(samplers.begin(), samplers.end());
+                shadow_job->uniform_entries = split_uniform_entries;
+                shadow_job->uniform_begin = split_uniform_begin;
+                shadow_job->uniform_end = split_uniform_end;
+                shadow_job->is_indexed = is_indexed;
+            }
+        }
     }
     u64 repeat_input = 0;
     u64 repeat_output = 0;
@@ -853,6 +1083,122 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     }
     if constexpr (Spec::enabled_stages[4]) {
         prepare_stage(4);
+    }
+    if (shadow_job) [[unlikely]] {
+        // Expected results: this draw's descriptor entries and resolved bindings.
+        const auto* const real_entries =
+            static_cast<const DescriptorUpdateEntry*>(guest_descriptor_queue.UpdateData());
+        shadow_job->expected_entries.assign(real_entries, real_entries + num_descriptor_entries);
+        shadow_job->expected_bindings = buffer_cache.Nx2Bindings();
+        shadow_job->run = [this](Nx2ShadowJob& job) {
+            using Maxwell3DEngine = Tegra::Engines::Maxwell3D;
+            namespace Guard = Common::Nx2CacheGuard;
+            std::array<DescriptorUpdateEntry, NX2_SHADOW_ENTRIES> entries;
+            size_t count = 0;
+            bool needs_serial = false;
+            {
+                std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+                Maxwell3DEngine::t_draw_regs = job.regs.get();
+                Maxwell3DEngine::t_draw_dirty = &job.dirty;
+                Maxwell3DEngine::t_draw_state = &job.draw_state;
+                BufferCache::t_gfx_override = &job.bindings;
+                Guard::t_shadow_prep = true;
+                Guard::t_shadow_needs_serial = false;
+                Common::Nx2LruDefer::t_active = true;
+                // A fresh preparer: nothing bound on the host yet, index/vertex buffers resolved again.
+                job.bindings.dirty_uniform_buffers.fill(~u32{0});
+                job.bindings.fast_bound_uniform_buffers.fill(0);
+                job.bindings.uniform_buffer_binding_sizes.fill({});
+                job.dirty[VideoCommon::Dirty::IndexBuffer] = true;
+                job.dirty[VideoCommon::Dirty::VertexBuffers] = true;
+                for (u32 index = 0; index < 32; ++index) {
+                    job.dirty[VideoCommon::Dirty::VertexBuffer0 + index] = true;
+                }
+                // Same steps as the preparation in ConfigureImpl (kept in step by hand).
+                if constexpr (Spec::has_texture_buffers || Spec::has_image_buffers) {
+                    VideoCommon::ImageViewInOut* texture_buffer_it{job.views.data()};
+                    for (size_t stage = 0; stage < 5; ++stage) {
+                        if (!Spec::enabled_stages[stage]) {
+                            continue;
+                        }
+                        size_t index{};
+                        const auto add_buffer{[&](const auto& desc) {
+                            constexpr bool is_image =
+                                std::is_same_v<decltype(desc), const ImageBufferDescriptor&>;
+                            for (u32 i = 0; i < desc.count; ++i) {
+                                bool is_written{false};
+                                if constexpr (is_image) {
+                                    is_written = desc.is_written;
+                                }
+                                ImageView& image_view{texture_cache.GetImageView(texture_buffer_it->id)};
+                                PixelFormat format{image_view.format};
+                                if constexpr (is_image) {
+                                    if (const auto explicit_format{PixelFormatFromImageFormat(desc.format)}) {
+                                        format = *explicit_format;
+                                    }
+                                }
+                                buffer_cache.BindGraphicsTextureBuffer(stage, index, image_view.GpuAddr(),
+                                                                       image_view.BufferSize(), format,
+                                                                       is_written, is_image);
+                                ++index;
+                                ++texture_buffer_it;
+                            }
+                        }};
+                        buffer_cache.UnbindGraphicsTextureBuffers(stage);
+                        const Shader::Info& info{stage_infos[stage]};
+                        if constexpr (Spec::has_texture_buffers) {
+                            for (const auto& desc : info.texture_buffer_descriptors) {
+                                add_buffer(desc);
+                            }
+                        }
+                        if constexpr (Spec::has_image_buffers) {
+                            for (const auto& desc : info.image_buffer_descriptors) {
+                                add_buffer(desc);
+                            }
+                        }
+                        texture_buffer_it += Shader::NumDescriptors(info.texture_descriptors);
+                        if constexpr (Spec::has_images) {
+                            texture_buffer_it += Shader::NumDescriptors(info.image_descriptors);
+                        }
+                    }
+                } else {
+                    for (size_t stage = 0; stage < 5; ++stage) {
+                        if (Spec::enabled_stages[stage]) {
+                            buffer_cache.UnbindGraphicsTextureBuffers(stage);
+                        }
+                    }
+                }
+                buffer_cache.UpdateGraphicsBuffers(job.is_indexed);
+                buffer_cache.BindHostGeometryBuffers(job.is_indexed);
+                GuestDescriptorQueue::Reservation reservation;
+                guest_descriptor_queue.BeginCaptureInto(reservation, entries.data(), entries.size());
+                RescalingPushConstant shadow_rescaling;
+                const VideoCommon::SamplerId* shadow_samplers_it{job.samplers.data()};
+                const VideoCommon::ImageViewInOut* shadow_views_it{job.views.data()};
+                for (size_t stage = 0; stage < 5; ++stage) {
+                    if (!Spec::enabled_stages[stage]) {
+                        continue;
+                    }
+                    guest_descriptor_queue.AddEntries(
+                        job.uniform_entries.data() + job.uniform_begin[stage],
+                        job.uniform_end[stage] - job.uniform_begin[stage]);
+                    buffer_cache.Nx2BindStageBuffersWithoutUniforms(stage);
+                    PushImageDescriptors(texture_cache, guest_descriptor_queue, stage_infos[stage],
+                                         shadow_rescaling, shadow_samplers_it, shadow_views_it);
+                }
+                count = GuestDescriptorQueue::EndCaptureFrom(reservation);
+                needs_serial = Guard::t_shadow_needs_serial;
+                Common::Nx2LruDefer::t_log.clear();
+                Common::Nx2LruDefer::t_active = false;
+                Guard::t_shadow_prep = false;
+                BufferCache::t_gfx_override = nullptr;
+                Maxwell3DEngine::t_draw_state = nullptr;
+                Maxwell3DEngine::t_draw_dirty = nullptr;
+                Maxwell3DEngine::t_draw_regs = nullptr;
+            }
+            Nx2ShadowCompare(job, entries.data(), std::min(count, entries.size()), needs_serial);
+        };
+        Nx2ShadowWorker::Get().Push(std::move(shadow_job));
     }
     if (buffer_cache.any_buffer_uploaded) {
         buffer_cache.runtime.PostCopyBarrier();
