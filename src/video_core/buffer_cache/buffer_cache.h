@@ -26,6 +26,7 @@
 #include "video_core/nx2_mutation_probe.h"
 #include "video_core/nx2_cb_hazard_probe.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_flush_probe.h"
 #include "video_core/texture_cache/util.h"
 
 namespace VideoCommon {
@@ -186,6 +187,23 @@ void BufferCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size
 template <class P>
 void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu_data) {
     Nx2NoteListHostWrite(device_addr, size);
+    // Flush opt 2 (fork mkw60): a draw's constant buffer updates land on pages that are still
+    // CPU-modified from the previous draw (uniforms are copied from guest memory, never uploaded
+    // from the buffer). Range in one page, page already CPU-modified, nothing GPU-modified on it:
+    // marking it again changes nothing, only the vertex buffers may need to know.
+    namespace FlushProbe = VideoCommon::Nx2FlushProbe;
+    if (FlushProbe::t_in_draw_flush && (FlushProbe::Opt() & 2) != 0 && size != 0) [[unlikely]] {
+        const DAddr page_begin = Common::AlignDown(device_addr, DEVICE_PAGESIZE);
+        if (Common::AlignDown(device_addr + size - 1, DEVICE_PAGESIZE) == page_begin &&
+            !gpu_modified_ranges.Intersects(page_begin, DEVICE_PAGESIZE) &&
+            memory_tracker.IsRegionCpuModified(device_addr, size)) {
+            if (FlushProbe::Enabled()) {
+                FlushProbe::NoteFastPath();
+            }
+            MarkVertexBuffersStale(device_addr, size);
+            return;
+        }
+    }
     if (IsRegionGpuModified(device_addr, size)) {
         ClearDownload(device_addr, size);
         gpu_modified_ranges.Subtract(device_addr, size);

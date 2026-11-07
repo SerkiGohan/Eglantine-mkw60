@@ -485,7 +485,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             FlushProbe::NoteDraw();
         } else {
             FlushWork();
+            FlushProbe::t_in_draw_flush = true;
             gpu_memory->FlushCaching();
+            FlushProbe::t_in_draw_flush = false;
         }
     }
     if (frame_dump.Capturing()) {
@@ -1620,6 +1622,35 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
             bytes += size;
         }
         FlushProbe::NoteInvalidation(sequences.size(), bytes);
+    }
+    // Flush opt 1 (fork mkw60): a draw's invalidation is mostly a handful of constant buffer
+    // updates a few bytes apart. Ranges in the same 4 KiB page at most 256 bytes apart are
+    // merged, so each cache walks fewer ranges (invalidating the bytes in between as well).
+    boost::container::small_vector<std::pair<DAddr, std::size_t>, 16> merged;
+    if (FlushProbe::t_in_draw_flush && sequences.size() > 1 && (FlushProbe::Opt() & 1) != 0) {
+        constexpr DAddr page_mask = ~DAddr{4095};
+        constexpr std::size_t max_gap = 256;
+        for (const auto& [addr, size] : sequences) {
+            if (!merged.empty()) {
+                auto& last = merged.back();
+                const DAddr last_end = last.first + last.second;
+                if ((addr & page_mask) == (last.first & page_mask) &&
+                    ((addr + size - 1) & page_mask) == (last.first & page_mask) &&
+                    addr + max_gap >= last.first && addr <= last_end + max_gap) {
+                    const DAddr begin = (std::min)(last.first, addr);
+                    const DAddr end = (std::max)(last_end, addr + size);
+                    last = {begin, static_cast<std::size_t>(end - begin)};
+                    continue;
+                }
+            }
+            merged.emplace_back(addr, size);
+        }
+        if (probe) [[unlikely]] {
+            FlushProbe::NoteMerged(merged.size());
+        }
+        sequences = std::span<const std::pair<DAddr, std::size_t>>(merged.data(), merged.size());
+    }
+    if (probe) [[unlikely]] {
         part_start = FlushProbe::Ticks();
     }
     {
