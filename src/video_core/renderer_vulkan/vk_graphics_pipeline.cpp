@@ -698,7 +698,10 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         guest_descriptor_queue.Acquire(scheduler, num_descriptor_entries, uses_descriptor_buffer);
     }
     // B2 step 3, piece 3: with EDEN_NX2_DESC_WRITER=1 the draw writes its descriptors into its own
-    // reserved range until here.
+    // reserved range until the end of ConfigureImpl.
+    if (GuestDescriptorQueue::Nx2WriterEnabled()) [[unlikely]] {
+        guest_descriptor_queue.Reserve(num_descriptor_entries);
+    }
     SCOPE_EXIT {
         guest_descriptor_queue.EndReservation();
     };

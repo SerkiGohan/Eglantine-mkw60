@@ -58,7 +58,7 @@ public:
                  bool use_descriptor_buffer_ = false);
 
     const DescriptorUpdateEntry* UpdateData() const noexcept {
-        return t_reservation != nullptr ? t_reservation->begin : upload_start;
+        return t_reservation == &reservation ? reservation.begin : upload_start;
     }
 
     /// B2 step 3, piece 3 (fork mkw60, EDEN_NX2_DESC_WRITER=1): a draw reserves exactly the
@@ -73,6 +73,8 @@ public:
         DescriptorUpdateEntry* end{};
     };
     static inline thread_local Reservation* t_reservation{};
+    /// Reserves `entries` for the current draw (call right after Acquire, end with EndReservation).
+    void Reserve(size_t entries);
     void EndReservation() noexcept;
 
     void AddSampledImage(VkImageView image_view, VkSampler sampler) {
@@ -137,7 +139,8 @@ public:
 
 private:
     DescriptorUpdateEntry*& Cursor() noexcept {
-        return t_reservation != nullptr ? t_reservation->cursor : payload_cursor;
+        // Only this queue's reservation: compute passes inside a draw use other queues.
+        return t_reservation == &reservation ? reservation.cursor : payload_cursor;
     }
 
     Reservation reservation{};

@@ -54,17 +54,19 @@ void UpdateDescriptorQueue::Acquire(Scheduler& scheduler, size_t required_entrie
         payload_cursor = payload_start;
     }
     upload_start = payload_cursor;
-    if (Nx2WriterEnabled() && t_reservation == nullptr) [[unlikely]] {
-        if (required_entries == 0) {
-            ++writer_stats.fallbacks;
-            return;
-        }
-        reservation.begin = payload_cursor;
-        reservation.cursor = payload_cursor;
-        reservation.end = payload_cursor + required_entries;
-        payload_cursor = reservation.end;
-        t_reservation = &reservation;
+}
+
+void UpdateDescriptorQueue::Reserve(size_t entries) {
+    // Right after Acquire, in GraphicsPipeline::ConfigureImpl only (EDEN_NX2_DESC_WRITER=1).
+    if (entries == 0 || t_reservation != nullptr) {
+        ++writer_stats.fallbacks;
+        return;
     }
+    reservation.begin = payload_cursor;
+    reservation.cursor = payload_cursor;
+    reservation.end = payload_cursor + entries;
+    payload_cursor = reservation.end;
+    t_reservation = &reservation;
 }
 
 bool UpdateDescriptorQueue::Nx2WriterEnabled() {
