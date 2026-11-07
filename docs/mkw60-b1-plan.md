@@ -72,3 +72,21 @@ draw. Whether that really happens (same addresses within a few draws) has not be
 - With the replica MKW looks the same (the user checks, check mode reports 0 mismatches).
 - Cost of replica + context measured (goal: < 3 % of the back thread).
 - Hazard from constant buffer writes quantified and decision for B3 made.
+
+## Result of step 1 (7.11.2026, time trial on Mario Bros. Circuit, fork `1825b1e0c6`, log `~/mkw-perf/fork/b1-cb-hazard-mario.log`)
+
+| | per second |
+|---|---|
+| Constant buffer writes | ~0.9–1.05 million (~3.5–4.1 MiB), ~50 % with a changed value |
+| Hits on memory that the **directly previous** draw read | handles ~250,000 (changed ~130,000), SSBO pointers ~155,000 (~40,000), uniforms ~80,000–97,000 (~56,000–68,000) |
+| Hits 2–32 draws back | uniforms ~50,000, handles ~30,000, pointers ~7,000 |
+| Hits 33–128 draws back (ring at the same place again) | uniforms ~80,000, handles ~70,000 |
+| no hit | ~170,000–290,000 |
+
+(64-byte chunks: neighbouring bytes count too, so the numbers are rather too high – the conclusion holds anyway.)
+
+**Decision for B3:** everything read from guest memory (texture handles, SSBO pointers, uniform copy into the ring)
+is read by the back thread **at draw time** into the snapshot. Only steps that keep working with these values run
+in parallel (image views/samplers, buffer bindings, pipeline, descriptors, dynamic state).
+Estimate: of ~257 ms/s of draw work, ~80–100 stay serial, ~150–170 can be parallelized.
+
