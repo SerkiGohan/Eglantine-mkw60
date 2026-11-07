@@ -322,7 +322,7 @@ u32 Maxwell3D::ProcessShadowRam(u32 method, u32 argument) {
 u32 Maxwell3D::Nx2ReplicaMode() {
     static const u32 mode = [] {
         const char* value = std::getenv("EDEN_NX2_DRAW_REPLICA");
-        return value != nullptr && value[0] >= '1' && value[0] <= '3' ? static_cast<u32>(value[0] - '0') : 0U;
+        return value != nullptr && value[0] >= '1' && value[0] <= '4' ? static_cast<u32>(value[0] - '0') : 0U;
     }();
     return mode;
 }

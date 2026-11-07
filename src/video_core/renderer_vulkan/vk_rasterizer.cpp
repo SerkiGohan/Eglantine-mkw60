@@ -728,15 +728,30 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     if (Tegra::Engines::Maxwell3D::Nx2ReplicaMode() != 0) [[unlikely]] {
         maxwell3d->Nx2SyncReplica(); // B1 step 2: register replica
     }
-    // B1 step 3: with EDEN_NX2_DRAW_REPLICA=3 the preparation reads the replica (DrawRegs).
-    const bool draw_from_replica =
-        Tegra::Engines::Maxwell3D::Nx2ReplicaMode() == 3 && maxwell3d->nx2_replica != nullptr;
+    // B1 step 3: with EDEN_NX2_DRAW_REPLICA=3/4 the preparation reads the replica (DrawRegs).
+    using Maxwell3DEngine = Tegra::Engines::Maxwell3D;
+    const u32 replica_mode = Maxwell3DEngine::Nx2ReplicaMode();
+    const bool draw_from_replica = replica_mode >= 3 && maxwell3d->nx2_replica != nullptr;
+    // Mode 4 (test): the live registers hold the previous draw's values meanwhile.
+    const bool stale_live = replica_mode == 4 && draw_from_replica;
     if (draw_from_replica) [[unlikely]] {
-        Tegra::Engines::Maxwell3D::t_draw_regs = maxwell3d->nx2_replica.get();
+        Maxwell3DEngine::t_draw_regs = maxwell3d->nx2_replica.get();
+    }
+    if (stale_live) [[unlikely]] {
+        if (!maxwell3d->nx2_previous_draw) {
+            maxwell3d->nx2_previous_draw = std::make_unique<Maxwell3DEngine::Regs>(maxwell3d->regs);
+            maxwell3d->nx2_saved_live = std::make_unique<Maxwell3DEngine::Regs>(maxwell3d->regs);
+        }
+        *maxwell3d->nx2_saved_live = maxwell3d->regs;
+        maxwell3d->regs = *maxwell3d->nx2_previous_draw;
     }
     SCOPE_EXIT {
+        if (stale_live) [[unlikely]] {
+            *maxwell3d->nx2_previous_draw = *maxwell3d->nx2_saved_live;
+            maxwell3d->regs = *maxwell3d->nx2_saved_live;
+        }
         if (draw_from_replica) [[unlikely]] {
-            Tegra::Engines::Maxwell3D::t_draw_regs = nullptr;
+            Maxwell3DEngine::t_draw_regs = nullptr;
         }
     };
     {
