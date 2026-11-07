@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/nx2_cache_guard.h"
+#include "video_core/nx2_flush_probe.h"
 #include "common/lru_cache.h"
 #include <algorithm>
 #include <array>
@@ -471,8 +472,21 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     namespace Profile = VideoCommon::Nx2Profile;
     {
         Profile::Scope scope{Profile::Zone::FlushWork};
-        FlushWork();
-        gpu_memory->FlushCaching();
+        namespace FlushProbe = VideoCommon::Nx2FlushProbe;
+        if (FlushProbe::Enabled()) [[unlikely]] {
+            const u64 work_start = FlushProbe::Ticks();
+            FlushWork();
+            FlushProbe::Add(FlushProbe::FlushWork, work_start);
+            const u64 caching_start = FlushProbe::Ticks();
+            FlushProbe::t_in_draw_flush = true;
+            gpu_memory->FlushCaching();
+            FlushProbe::t_in_draw_flush = false;
+            FlushProbe::Add(FlushProbe::FlushCaching, caching_start);
+            FlushProbe::NoteDraw();
+        } else {
+            FlushWork();
+            gpu_memory->FlushCaching();
+        }
     }
     if (frame_dump.Capturing()) {
         frame_dump.DrainIfFull();
@@ -1597,11 +1611,26 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
     if (Settings::values.skip_cpu_inner_invalidation.GetValue()) {
         return;
     }
+    namespace FlushProbe = VideoCommon::Nx2FlushProbe;
+    const bool probe = FlushProbe::Enabled();
+    u64 part_start = 0;
+    if (probe) [[unlikely]] {
+        u64 bytes = 0;
+        for (const auto& [addr, size] : sequences) {
+            bytes += size;
+        }
+        FlushProbe::NoteInvalidation(sequences.size(), bytes);
+        part_start = FlushProbe::Ticks();
+    }
     {
         std::scoped_lock lock{texture_cache.mutex};
         for (const auto& [addr, size] : sequences) {
             texture_cache.WriteMemory(addr, size);
         }
+    }
+    if (probe) [[unlikely]] {
+        FlushProbe::Add(FlushProbe::Texture, part_start);
+        part_start = FlushProbe::Ticks();
     }
     {
         std::scoped_lock lock{buffer_cache.mutex};
@@ -1609,10 +1638,21 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
             buffer_cache.WriteMemory(addr, size);
         }
     }
+    if (probe) [[unlikely]] {
+        FlushProbe::Add(FlushProbe::Buffer, part_start);
+        part_start = FlushProbe::Ticks();
+    }
     for (const auto& [addr, size] : sequences) {
         query_cache.InvalidateRegion(addr, size);
     }
+    if (probe) [[unlikely]] {
+        FlushProbe::Add(FlushProbe::Query, part_start);
+        part_start = FlushProbe::Ticks();
+    }
     pipeline_cache.InvalidateRegions(sequences);
+    if (probe) [[unlikely]] {
+        FlushProbe::Add(FlushProbe::Pipeline, part_start);
+    }
 }
 
 bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
