@@ -90,3 +90,10 @@ is read by the back thread **at draw time** into the snapshot. Only steps that k
 in parallel (image views/samplers, buffer bindings, pipeline, descriptors, dynamic state).
 Estimate: of ~257 ms/s of draw work, ~80–100 stay serial, ~150–170 can be parallelized.
 
+## Result of step 2 (7.11.2026, time trial on Mario Bros. Circuit, fork `5a7c02d833`, `EDEN_NX2_DRAW_REPLICA=2`, log `~/mkw-perf/fork/b1-replica-mario.log`)
+
+~79,000–94,000 draws/s, **~19 tracked registers per draw**, **0 draws with a mismatch** over the whole lap.
+Marking in `ProcessDirtyRegisters` is enough for MKW; direct field writes (e.g. `const_buffer.offset +=` in
+`ProcessCBMultiData`) hit registers that are marked before the next draw anyway, because the replica copies
+the current value at draw time. Keep the check mode running in later tests (other tracks, open world).
+
