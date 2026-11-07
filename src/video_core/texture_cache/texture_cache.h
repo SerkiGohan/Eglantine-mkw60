@@ -20,6 +20,7 @@
 #include "common/alignment.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
+#include "video_core/nx2_mutation_probe.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/kepler_compute.h"
@@ -1669,6 +1670,7 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         return;
     }
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::TextureUpload};
+    ++Nx2MutationProbe::t_counters.texture_uploads; // M2 mutation probe
 
     image.flags &= ~ImageFlagBits::CpuModified;
 
@@ -2069,6 +2071,7 @@ ImageViewId TextureCache<P>::CreateImageView(const TICEntry& raw_config) {
     const ImageInfo info(config);
     if (info.type == ImageType::Buffer) {
         const ImageViewInfo view_info(config, 0);
+        ++Nx2MutationProbe::t_counters.texture_creates; // M2 mutation probe
         return slot_image_views.insert(runtime, info, view_info, config.Address());
     }
     const u32 layer_offset = config.BaseLayer() * info.layer_stride;
@@ -2608,6 +2611,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         }
     }
     const ImageId new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
+    ++Nx2MutationProbe::t_counters.texture_creates; // M2 mutation probe
     Image& new_image = slot_images[new_image_id];
 
     new_image.allocation_tick = frame_tick;
@@ -2949,6 +2953,7 @@ SamplerId TextureCache<P>::FindSampler(const TSCEntry& config, bool compute) {
     const auto [pair, is_new] = channel_state->samplers.try_emplace(config);
     if (is_new) {
         pair->second = slot_samplers.insert(runtime, config);
+        ++Nx2MutationProbe::t_counters.texture_creates; // M2 mutation probe
     }
     return pair->second;
 }
@@ -3205,6 +3210,7 @@ ImageViewId TextureCache<P>::FindOrEmplaceImageView(ImageId image_id, const Imag
                  info.range.extent.layers);
     }
     const ImageViewId image_view_id = slot_image_views.insert(runtime, info, image_id, image, slot_images);
+    ++Nx2MutationProbe::t_counters.texture_creates; // M2 mutation probe
     image.InsertView(info, image_view_id);
     return image_view_id;
 }

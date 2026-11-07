@@ -33,6 +33,7 @@
 #include "common/settings.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/renderer_vulkan/nx2_draw_repeat_probe.h"
+#include "video_core/nx2_mutation_probe.h"
 
 #if defined(__clang__) && defined(NDEBUG)
 #define LAMBDA_FORCEINLINE __attribute__((always_inline))
@@ -392,6 +393,11 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     // M1 draw-repeat probe (nx2_draw_repeat_probe.h)
     const bool repeat_probe = Nx2DrawRepeatProbe::Enabled();
     const s64 repeat_start = repeat_probe ? Nx2DrawRepeatProbe::NowNs() : 0;
+    // M2 mutation probe (nx2_mutation_probe.h)
+    const bool mutation_probe = VideoCommon::Nx2MutationProbe::Enabled();
+    const VideoCommon::Nx2MutationProbe::Counters mutation_before =
+        VideoCommon::Nx2MutationProbe::t_counters;
+    const s64 mutation_start = mutation_probe ? VideoCommon::Nx2MutationProbe::NowNs() : 0;
     boost::container::small_vector<VideoCommon::ImageViewInOut, 160> views;
     boost::container::small_vector<VideoCommon::SamplerId, 96> samplers;
     views.reserve(num_image_elements);
@@ -717,6 +723,9 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     const bool configured = ConfigureDraw(rescaling, render_area);
     if (repeat_probe) [[unlikely]] {
         Nx2DrawRepeatProbe::Note(repeat_input, repeat_output, repeat_start);
+    }
+    if (mutation_probe) [[unlikely]] {
+        VideoCommon::Nx2MutationProbe::NoteDraw(mutation_before, mutation_start);
     }
     return configured;
 }
