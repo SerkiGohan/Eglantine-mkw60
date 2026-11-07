@@ -135,3 +135,15 @@ So it pays off to make the serial chunks cheaper on the side (uniform copy, flus
 - The AMD logic op workaround in `UpdateDynamicStates` writes registers: per preparer.
 - Queries (occlusion queries, `query_cache`) and transform feedback: always `heavy` at first.
 - Inline index data (`inline_index_draw_indexes`) and indirect draws: always `heavy` at first.
+
+## Result of P1 (7.11.2026 ~16:50, Mario Bros. Circuit, fork `b7f3f128f7`, log `~/mkw-perf/fork/p1-prep-split-mario.log`)
+
+- `EDEN_NX2_PREP_SPLIT=1` together with all B2 switches (dirty copy, 2 contexts with a switch after every draw, descriptor reservation,
+  LRU deferred): **image completely normal** (user).
+- The first attempt crashed while loading (`e80932dbab`): end of the uniform entries per stage counted wrongly (`EndCapture` counts from the start of the
+  stage) → negative count, `AddEntries` overwrote the descriptors. Fix + `ASSERT` in `b7f3f128f7`.
+- ~6.5 uniform entries per draw (out of ~15 entries in total).
+- **Only 0.3–0.6 % of draws in the race would be "heavy"** (the preparation uploads / creates after all), almost only buffer uploads (~250–470/s),
+  new buffers 0–11/s, textures 0 (texture uploads all happen in the serial part). Menu/loading up to 1.2 %. Better than the M2 estimate (1–3 %).
+- Draws/s in the race as usual (75,000–86,000), descriptor reservation still 0 mismatches.
+- Open for P2/P3: upload check in the serial part (instead of counting afterwards), cost of the split with perf.

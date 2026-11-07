@@ -52,3 +52,4 @@ by register; pre-parse command lists in parallel; process channels separately wh
 | 7.11.2026 | B2 step 3 piece 2 binding contexts | Buffer cache bindings per context (`EDEN_NX2_PREP_CONTEXTS`), test with a switch after every draw: image perfect |
 | 7.11.2026 | B2 step 3 piece 3 descriptors | Own reserved range per draw (`EDEN_NX2_DESC_WRITER=1`); after the crash fix, together with pieces 1+2 (switch after every draw): image perfect, 0 deviations from the reservation |
 | 7.11.2026 | B2 step 3 piece 4 pipeline/scheduler/LRU | Key per context, scheduler/StateTracker state reset, LRU deferred; all 4 pieces together, switch after every draw: no rendering errors, not slower → **B2 step 3 done** |
+| 7.11.2026 | P1 splitting ConfigureImpl | Serial part (incl. render targets, uniform copy) before the preparation (`EDEN_NX2_PREP_SPLIT=1`), with all B2 switches: image normal; only 0.3–0.6 % of draws "heavy" (buffer uploads) |
