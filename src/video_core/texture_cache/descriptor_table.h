@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include "common/nx2_cache_guard.h"
 #include <cstring>
 #include <vector>
 
@@ -62,6 +63,7 @@ public:
             result.second = true;
         }
         if (result.second) {
+            Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescTableMemo); // B2 cache guard
             descriptors[index] = result.first;
         }
         return result;

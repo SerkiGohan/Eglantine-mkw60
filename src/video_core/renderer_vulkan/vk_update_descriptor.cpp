@@ -38,6 +38,7 @@ void UpdateDescriptorQueue::TickFrame() {
 
 void UpdateDescriptorQueue::Acquire(Scheduler& scheduler, size_t required_entries,
                                     bool use_descriptor_buffer_) {
+    Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue); // B2 cache guard
     use_descriptor_buffer = supports_descriptor_buffer && use_descriptor_buffer_;
     static constexpr size_t DEFAULT_REQUIRED_ENTRIES = 0x400;
     const size_t reserve = required_entries > 0 ? required_entries : DEFAULT_REQUIRED_ENTRIES;

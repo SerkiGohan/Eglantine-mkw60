@@ -17,6 +17,7 @@
 
 #include "common/alignment.h"
 #include "common/common_types.h"
+#include "common/nx2_cache_guard.h"
 #include "common/polyfill_thread.h"
 #include "common/settings.h"
 #include "video_core/gpu_split.h"
@@ -135,6 +136,7 @@ public:
     template <typename T>
         requires std::is_invocable_v<T, vk::CommandBuffer, vk::CommandBuffer>
     void RecordWithUploadBuffer(T&& command) {
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::SchedulerRecord); // B2 cache guard
         if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
             VideoCommon::GpuSplit::CheckOwner("Scheduler::Record");
         }

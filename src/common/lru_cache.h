@@ -11,6 +11,7 @@
 #include <type_traits>
 
 #include "common/common_types.h"
+#include "common/nx2_cache_guard.h"
 
 namespace Common {
 
@@ -36,6 +37,7 @@ public:
         item.obj = obj;
         item.tick = tick;
         Attach(item);
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::LruInsertFree); // B2 cache guard
         return new_id;
     }
 
@@ -45,6 +47,7 @@ public:
             return;
         }
         item.tick = tick;
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::LruTouch); // B2 cache guard
         if (&item == last_item) {
             return;
         }
@@ -53,6 +56,7 @@ public:
     }
 
     void Free(size_t id) {
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::LruInsertFree); // B2 cache guard
         auto& item = item_pool[id];
         Detach(item);
         item.prev = nullptr;

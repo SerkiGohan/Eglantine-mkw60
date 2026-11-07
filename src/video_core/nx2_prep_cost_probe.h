@@ -17,6 +17,7 @@
 #include <string>
 #include <fmt/format.h>
 #include "common/common_types.h"
+#include "common/nx2_cache_guard.h"
 #include "common/logging.h"
 #if defined(__x86_64__) || defined(_M_X64)
 #include <x86intrin.h>
@@ -24,10 +25,12 @@
 
 namespace VideoCommon::Nx2PrepCost {
 
-inline const bool g_enabled = [] {
+inline const bool g_timing = [] {
     const char* value = std::getenv("EDEN_NX2_PREP_COST_PROBE");
     return value != nullptr && value[0] == '1';
 }();
+/// Zone tracking runs for the timing and for the cache guard (B2 step 2).
+inline const bool g_enabled = g_timing || Common::Nx2CacheGuard::g_enabled;
 
 inline constexpr u32 None = ~0U;
 inline constexpr u32 MaxZones = 64;
@@ -126,14 +129,49 @@ inline void Report(Data& d) {
     }
     const double draws = static_cast<double>(d.draws) / seconds;
     const double scopes = static_cast<double>(d.scopes) / seconds;
-    LOG_INFO(HW_GPU,
-             "Prep cost probe: Draws {:.0f}/s | draw total {:.1f} ms/s ({:.2f} us/draw) | serial "
-             "{:.1f} ms/s:{} | parallelizable {:.1f} ms/s:{} | zones {:.0f}/s, measurement overhead ~{:.1f} "
-             "ms/s (rdtsc {:.1f} ns)",
-             draws, ms_per_s(serial + parallel),
-             draws > 0 ? ms_per_s(serial + parallel) * 1000.0 / draws : 0.0, ms_per_s(serial),
-             serial_text, ms_per_s(parallel), parallel_text, scopes,
-             scopes * 2.0 * read_ns / 1e6, read_ns);
+    if (g_timing) {
+        LOG_INFO(HW_GPU,
+                 "Prep cost probe: Draws {:.0f}/s | draw total {:.1f} ms/s ({:.2f} us/draw) | serial "
+                 "{:.1f} ms/s:{} | parallelizable {:.1f} ms/s:{} | zones {:.0f}/s, measurement overhead ~{:.1f} "
+                 "ms/s (rdtsc {:.1f} ns)",
+                 draws, ms_per_s(serial + parallel),
+                 draws > 0 ? ms_per_s(serial + parallel) * 1000.0 / draws : 0.0, ms_per_s(serial),
+                 serial_text, ms_per_s(parallel), parallel_text, scopes,
+                 scopes * 2.0 * read_ns / 1e6, read_ns);
+    }
+    if (Common::Nx2CacheGuard::g_enabled) {
+        namespace Guard = Common::Nx2CacheGuard;
+        auto& counts = Guard::t_data.counts;
+        std::string text;
+        for (u32 site = 0; site < Guard::NumSites; ++site) {
+            u64 serial_count{}, parallel_count{};
+            std::string zones;
+            for (u32 zone = 0; zone < Guard::MaxZones && zone < Nx2Profile::zone_names.size();
+                 ++zone) {
+                const u64 n = counts[site][zone];
+                if (n == 0) {
+                    continue;
+                }
+                if (IsSerial(zone)) {
+                    serial_count += n;
+                } else {
+                    parallel_count += n;
+                    zones += fmt::format(" {} {:.0f}", Nx2Profile::zone_names[zone],
+                                         static_cast<double>(n) / seconds);
+                }
+            }
+            if (serial_count == 0 && parallel_count == 0) {
+                continue;
+            }
+            text += fmt::format(" | {}: serial {:.0f}/s, parallel {:.0f}/s{}{}",
+                                Guard::site_names[site],
+                                static_cast<double>(serial_count) / seconds,
+                                static_cast<double>(parallel_count) / seconds,
+                                zones.empty() ? "" : " (", zones.empty() ? "" : zones + ")");
+        }
+        LOG_INFO(HW_GPU, "Cache guard: Draws {:.0f}/s{}", draws, text);
+        counts = {};
+    }
     d.ticks = {};
     d.count = {};
     d.draws = 0;
@@ -152,6 +190,8 @@ NX2_PREP_NOINLINE inline bool Begin(u32 zone, u32 draw_zone, u32& parent) {
     if (d.current != None) {
         d.ticks[d.current] += now - d.last;
     }
+    Common::Nx2CacheGuard::Transition(d.current);
+    Common::Nx2CacheGuard::t_zone = zone;
     parent = d.current;
     d.current = zone;
     d.last = now;
@@ -164,6 +204,11 @@ NX2_PREP_NOINLINE inline void End(u32 zone, u32 draw_zone, u32 parent) {
     const u64 now = Ticks();
     d.ticks[d.current] += now - d.last;
     ++d.count[zone];
+    Common::Nx2CacheGuard::Transition(d.current);
+    Common::Nx2CacheGuard::t_zone = parent;
+    if (parent == None) {
+        Common::Nx2CacheGuard::t_data.dirty_flags = nullptr;
+    }
     d.current = parent;
     d.last = now;
     if (zone == draw_zone && parent == None) {

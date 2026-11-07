@@ -9,6 +9,7 @@
 #include <memory>
 #include <variant>
 #include <vector>
+#include "common/nx2_cache_guard.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Vulkan {
@@ -61,6 +62,7 @@ public:
     }
 
     void AddSampledImage(VkImageView image_view, VkSampler sampler) {
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue); // B2 cache guard
         *(payload_cursor++) = VkDescriptorImageInfo{
             .sampler = sampler,
             .imageView = image_view,
@@ -69,6 +71,7 @@ public:
     }
 
     void AddImage(VkImageView image_view) {
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue); // B2 cache guard
         *(payload_cursor++) = VkDescriptorImageInfo{
             .sampler = VK_NULL_HANDLE,
             .imageView = image_view,
@@ -77,6 +80,7 @@ public:
     }
 
     void AddBuffer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size) {
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue); // B2 cache guard
         *(payload_cursor++) = VkDescriptorBufferInfo{
             .buffer = buffer,
             .offset = offset,
@@ -90,6 +94,7 @@ public:
             AddBuffer(buffer, offset, size);
             return;
         }
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue); // B2 cache guard
         *(payload_cursor++) = DescriptorAddress{
             .address = base_address == 0 ? 0 : base_address + offset,
             .range = base_address == 0 ? VK_WHOLE_SIZE : size,
@@ -98,6 +103,7 @@ public:
     }
 
     void AddTexelBuffer(VkBufferView texel_buffer) {
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue); // B2 cache guard
         *(payload_cursor++) = texel_buffer;
     }
 
@@ -107,6 +113,7 @@ public:
             AddTexelBuffer(texel_buffer);
             return;
         }
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue); // B2 cache guard
         *(payload_cursor++) = DescriptorAddress{
             .address = base_address == 0 ? 0 : base_address + offset,
             .range = base_address == 0 ? VK_WHOLE_SIZE : size,

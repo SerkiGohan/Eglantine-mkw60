@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/nx2_cache_guard.h"
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -739,6 +740,7 @@ bool PipelineCache::IsIndirectResetShader() const {
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
 
     if (!RefreshStages(graphics_key.unique_hashes)) {
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::PipelineState); // B2 cache guard
         current_pipeline = nullptr;
         graphics_miss = "stage-rejected";
         return nullptr;
@@ -748,6 +750,9 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
     if (current_pipeline) {
         GraphicsPipeline* const next{current_pipeline->Next(graphics_key)};
         if (next) {
+            if (next != current_pipeline) {
+                Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::PipelineState); // B2 cache guard
+            }
             current_pipeline = next;
             current_pipeline->MarkUsed(frame_count);
             return BuiltPipeline(current_pipeline);
@@ -1154,6 +1159,7 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     if (current_pipeline) {
         current_pipeline->AddTransition(pipeline.get());
     }
+    Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::PipelineState); // B2 cache guard
     current_pipeline = pipeline.get();
     current_pipeline->MarkUsed(frame_count);
     return BuiltPipeline(current_pipeline);

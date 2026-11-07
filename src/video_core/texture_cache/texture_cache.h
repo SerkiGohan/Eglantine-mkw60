@@ -839,6 +839,7 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
         if (IsValidEntry(*gpu_memory, descriptor)) {
             const auto [pair, is_new_tc] = channel_state->image_views.try_emplace(descriptor);
             if (is_new_tc) {
+                Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::ImageViewInsert); // B2 cache guard
                 pair->second = CreateImageView(descriptor);
                 if (pair->second != NULL_IMAGE_VIEW_ID) {
                     image_view_descriptors[pair->second].emplace_back(current_channel_id,
@@ -2952,6 +2953,7 @@ SamplerId TextureCache<P>::FindSampler(const TSCEntry& config, bool compute) {
     }
     const auto [pair, is_new] = channel_state->samplers.try_emplace(config);
     if (is_new) {
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::SamplerCreate); // B2 cache guard
         pair->second = slot_samplers.insert(runtime, config);
         ++Nx2MutationProbe::t_counters.texture_creates; // M2 mutation probe
     }
@@ -3540,6 +3542,7 @@ void TextureCache<P>::RemoveFramebuffers(std::span<const ImageViewId> removed_vi
 
 template <class P>
 void TextureCache<P>::MarkModification(ImageBase& image) noexcept {
+    Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::ImageModified); // B2 cache guard
     image.flags |= ImageFlagBits::GpuModified;
     image.modification_tick = ++modification_tick;
 }

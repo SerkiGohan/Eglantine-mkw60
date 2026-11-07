@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/nx2_cache_guard.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -725,6 +726,7 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
 
 void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
+    Common::Nx2CacheGuard::SetDirtyFlags(&maxwell3d->dirty.flags); // B2 cache guard
     if (Tegra::Engines::Maxwell3D::Nx2ReplicaMode() != 0) [[unlikely]] {
         maxwell3d->Nx2SyncReplica(); // B1 step 2: register replica
     }
@@ -937,6 +939,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
 
 void RasterizerVulkan::DrawIndirect() {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
+    Common::Nx2CacheGuard::SetDirtyFlags(&maxwell3d->dirty.flags); // B2 cache guard
     const auto& params = maxwell3d->draw_manager.indirect_state;
     if (VideoCommon::Nx2Diag::Active()) {
         g_diag_draw = {"indirect", static_cast<u32>(params.max_draw_counts), 0};

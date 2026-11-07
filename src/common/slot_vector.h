@@ -15,6 +15,7 @@
 
 #include "common/assert.h"
 #include "common/common_types.h"
+#include "common/nx2_cache_guard.h"
 #include <ranges>
 
 namespace Common {
@@ -125,6 +126,7 @@ public:
 
     template <typename... Args>
     [[nodiscard]] SlotId insert(Args&&... args) noexcept {
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::SlotInsert); // B2 cache guard
         const u32 index = FreeValueIndex();
         new (&values[index].object) T(std::forward<Args>(args)...);
         SetStorageBit(index);
@@ -133,6 +135,7 @@ public:
     }
 
     void erase(SlotId id) noexcept {
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::SlotErase); // B2 cache guard
         values[id.Value()].object.~T();
         free_list.push_back(id.Value());
         ResetStorageBit(id.Value());

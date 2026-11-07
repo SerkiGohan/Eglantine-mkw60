@@ -1654,6 +1654,7 @@ void BufferCache<P>::DoUpdateComputeBuffers() {
 
 template <class P>
 void BufferCache<P>::UpdateIndexBuffer() {
+    Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::BindingState); // B2 cache guard
     // We have to check for the dirty flags and index count
     // The index count is currently changed without updating the dirty flags
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
@@ -1713,6 +1714,7 @@ void BufferCache<P>::UpdateVertexBuffers() {
 
 template <class P>
 void BufferCache<P>::UpdateVertexBuffer(u32 index) {
+    Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::BindingState); // B2 cache guard
     if (!maxwell3d->dirty.flags[Dirty::VertexBuffer0 + index]) {
         return;
     }
@@ -1770,6 +1772,7 @@ void BufferCache<P>::UpdateDrawIndirect() {
 
 template <class P>
 void BufferCache<P>::UpdateUniformBuffers(size_t stage) {
+    Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::BindingState); // B2 cache guard
     if (channel_state->enabled_uniform_buffer_masks[stage] == 0) [[likely]] {
         return;
     }
@@ -1790,6 +1793,7 @@ void BufferCache<P>::UpdateUniformBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
+    Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::BindingState); // B2 cache guard
     if (channel_state->enabled_storage_buffers[stage] == 0) [[likely]] {
         return;
     }
@@ -1805,6 +1809,7 @@ void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::UpdateTextureBuffers(size_t stage) {
+    Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::BindingState); // B2 cache guard
     if (channel_state->enabled_texture_buffers[stage] == 0) [[likely]] {
         return;
     }
@@ -1826,6 +1831,7 @@ void BufferCache<P>::UpdateTransformFeedbackBuffers() {
 
 template <class P>
 void BufferCache<P>::UpdateTransformFeedbackBuffer(u32 index) {
+    Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::BindingState); // B2 cache guard
     const auto& binding = maxwell3d->DrawRegs().transform_feedback.buffers[index];
     const GPUVAddr gpu_addr = binding.Address() + binding.start_offset;
     const u32 size = binding.size;
