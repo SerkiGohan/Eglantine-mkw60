@@ -16,6 +16,7 @@
 #include "common/assert.h"
 #include "common/common_types.h"
 #include "common/nx2_cache_guard.h"
+#include "common/nx2_prep_lock.h"
 #include <ranges>
 
 namespace Common {
@@ -135,6 +136,8 @@ public:
     }
 
     void erase(SlotId id) noexcept {
+        Common::Nx2PrepLock::WriteScope prep_lock; // P2b: no preparer reads the object meanwhile
+        Common::Nx2PrepLock::NoteErase();
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::SlotErase); // B2 cache guard
         values[id.Value()].object.~T();
         free_list.push_back(id.Value());
@@ -192,6 +195,7 @@ private:
 
     [[nodiscard]] u32 FreeValueIndex() noexcept {
         if (free_list.empty()) {
+            Common::Nx2PrepLock::WriteScope prep_lock; // P2b: growing moves every object
             Reserve(values_capacity ? (values_capacity << 1) : 1);
         }
         const u32 free_index = free_list.back();

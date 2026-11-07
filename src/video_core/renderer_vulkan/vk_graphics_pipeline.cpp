@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <shared_mutex>
 #include <atomic>
 #include <thread>
 #include <mutex>
@@ -26,6 +27,8 @@
 #include "common/bit_field.h"
 #include "common/scope_exit.h"
 #include "common/thread.h"
+#include "common/nx2_prep_lock.h"
+#include "common/spin_recursive_mutex.h"
 #include "common/lru_cache.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
@@ -498,11 +501,22 @@ struct Nx2ShadowJob {
     std::array<u32, 5> uniform_begin{};
     std::array<u32, 5> uniform_end{};
     std::vector<DescriptorUpdateEntry> expected_entries;
+    u64 epoch{}; ///< Common::Nx2PrepLock::g_epoch when the job was made
     bool is_indexed{};
 };
 
+/// P2b: without EDEN_NX2_PREP_SHADOW_LOCKED=1 the shadow works without the cache locks, holding the
+/// preparer lock (Common::Nx2PrepLock) shared; structural cache changes wait for it.
+bool Nx2ShadowLocked() {
+    static const bool locked = [] {
+        const char* value = std::getenv("EDEN_NX2_PREP_SHADOW_LOCKED");
+        return value != nullptr && value[0] == '1';
+    }();
+    return locked;
+}
+
 struct Nx2ShadowStats {
-    u64 jobs{}, aborted{}, compared{}, count_mismatch{}, entry_mismatch{}, binding_mismatch{};
+    u64 jobs{}, aborted{}, stale{}, compared{}, count_mismatch{}, entry_mismatch{}, binding_mismatch{};
     u32 details{};
     s64 last_report{};
 };
@@ -517,6 +531,9 @@ public:
         Stop();
     }
     void Push(std::unique_ptr<Nx2ShadowJob> job) {
+        if (!Nx2ShadowLocked()) {
+            Common::Nx2PrepLock::g_enabled.store(true, std::memory_order_relaxed);
+        }
         std::scoped_lock lock{mutex};
         if (stopped) {
             return;
@@ -646,11 +663,12 @@ void Nx2ShadowCompare(Nx2ShadowJob& job, const DescriptorUpdateEntry* entries, s
     }
     const double seconds = static_cast<double>(now - stats.last_report) / 1e9;
     LOG_INFO(Render_Vulkan,
-             "Prep shadow: jobs {:.0f}/s (dropped, queue full: {}) | serial needed "
-             "{:.0f}/s | compared {:.0f}/s: count differs {}, entries differ {}, "
-             "bindings differ {}",
+             "Prep shadow ({}): jobs {:.0f}/s (dropped, queue full: {}; stale {}) | "
+             "serial needed {:.0f}/s | compared {:.0f}/s: count differs {}, entries "
+             "differ {}, bindings differ {}",
+             Nx2ShadowLocked() ? "with cache locks" : "without cache locks",
              static_cast<double>(stats.jobs) / seconds,
-             Nx2ShadowWorker::Get().dropped.exchange(0, std::memory_order_relaxed),
+             Nx2ShadowWorker::Get().dropped.exchange(0, std::memory_order_relaxed), stats.stale,
              static_cast<double>(stats.aborted) / seconds,
              static_cast<double>(stats.compared) / seconds, stats.count_mismatch,
              stats.entry_mismatch, stats.binding_mismatch);
@@ -1090,6 +1108,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             static_cast<const DescriptorUpdateEntry*>(guest_descriptor_queue.UpdateData());
         shadow_job->expected_entries.assign(real_entries, real_entries + num_descriptor_entries);
         shadow_job->expected_bindings = buffer_cache.Nx2Bindings();
+        shadow_job->epoch = Common::Nx2PrepLock::g_epoch.load(std::memory_order_relaxed);
         shadow_job->run = [this](Nx2ShadowJob& job) {
             using Maxwell3DEngine = Tegra::Engines::Maxwell3D;
             namespace Guard = Common::Nx2CacheGuard;
@@ -1097,7 +1116,24 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             size_t count = 0;
             bool needs_serial = false;
             {
-                std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+                // P2b: shared preparer lock (structural changes wait), or the old cache locks.
+                const bool locked = Nx2ShadowLocked();
+                std::shared_lock prep_lock{Common::Nx2PrepLock::g_mutex, std::defer_lock};
+                std::unique_lock<Common::SpinRecursiveMutex> buffer_lock{buffer_cache.mutex,
+                                                                         std::defer_lock};
+                std::unique_lock<Common::SpinRecursiveMutex> texture_lock{texture_cache.mutex,
+                                                                          std::defer_lock};
+                if (locked) {
+                    std::lock(buffer_lock, texture_lock);
+                } else {
+                    prep_lock.lock();
+                    if (Common::Nx2PrepLock::g_epoch.load(std::memory_order_relaxed) != job.epoch) {
+                        // Something was erased since the snapshot: its ids may be gone.
+                        ++Nx2ShadowWorker::Get().stats.stale;
+                        return;
+                    }
+                }
+                Common::Nx2PrepLock::t_reader = true;
                 Maxwell3DEngine::t_draw_regs = job.regs.get();
                 Maxwell3DEngine::t_draw_dirty = &job.dirty;
                 Maxwell3DEngine::t_draw_state = &job.draw_state;
@@ -1191,6 +1227,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                 Common::Nx2LruDefer::t_log.clear();
                 Common::Nx2LruDefer::t_active = false;
                 Guard::t_shadow_prep = false;
+                Common::Nx2PrepLock::t_reader = false;
                 BufferCache::t_gfx_override = nullptr;
                 Maxwell3DEngine::t_draw_state = nullptr;
                 Maxwell3DEngine::t_draw_dirty = nullptr;

@@ -476,6 +476,10 @@ void BufferCache<P>::DisableGraphicsUniformBuffer(size_t stage, u32 index) {
 
 template <class P>
 void BufferCache<P>::UpdateGraphicsBuffers(bool is_indexed) {
+    if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+        DoUpdateGraphicsBuffers(is_indexed); // P2b: the channel's deletion flag stays untouched
+        return;
+    }
     do {
         channel_state->has_deleted_buffers = false;
         DoUpdateGraphicsBuffers(is_indexed);
@@ -1451,7 +1455,7 @@ void BufferCache<P>::BindHostGraphicsStorageBuffers(size_t stage) {
     ForEachEnabledBit(Gfx().enabled_storage_buffers[stage], [&](u32 index) {
         const Binding& binding = Gfx().storage_buffers[stage][index];
         const bool is_written = ((Gfx().written_storage_buffers[stage] >> index) & 1) != 0;
-        if (BindMultiRangeStorage(binding, is_written, graphics_segments)) {
+        if (BindMultiRangeStorage(binding, is_written, GraphicsSegments())) {
             return;
         }
         Buffer& buffer = slot_buffers[binding.buffer_id];
@@ -1655,7 +1659,7 @@ void BufferCache<P>::BindHostComputeTextureBuffers() {
 
 template <class P>
 void BufferCache<P>::DoUpdateGraphicsBuffers(bool is_indexed) {
-    graphics_segments.clear();
+    GraphicsSegments().clear();
     BufferOperations([&]() {
         if (is_indexed) {
             UpdateIndexBuffer();
@@ -1834,7 +1838,7 @@ void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
         const BufferId buffer_id = FindBuffer(binding.device_addr, binding.size, false);
         binding.buffer_id = buffer_id;
         const bool is_written = ((Gfx().written_storage_buffers[stage] >> index) & 1) != 0;
-        ResolveMultiRangeStorage(binding, is_written, graphics_segments);
+        ResolveMultiRangeStorage(binding, is_written, GraphicsSegments());
     });
 }
 
@@ -2753,6 +2757,8 @@ bool BufferCache<P>::Nx2BeginDraw() {
 
 template <class P>
 void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
+    Common::Nx2PrepLock::WriteScope prep_lock; // P2b: the buffer is moved out of its slot
+    Common::Nx2PrepLock::NoteErase();
     if constexpr (requires { runtime.OnBufferDeleted(slot_buffers[buffer_id]); }) {
         runtime.OnBufferDeleted(slot_buffers[buffer_id]);
     }

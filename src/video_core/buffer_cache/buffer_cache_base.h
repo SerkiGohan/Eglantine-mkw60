@@ -815,6 +815,11 @@ private:
     Common::LeastRecentlyUsedCache<LRUItemParams> lru_cache;
     VirtualRangeCache virtual_ranges;
     std::vector<MultiRangeSegment> graphics_segments;
+    /// P2b: a shadow preparer keeps its own segment pool.
+    static inline thread_local std::vector<MultiRangeSegment> t_shadow_segments;
+    std::vector<MultiRangeSegment>& GraphicsSegments() noexcept {
+        return Common::Nx2CacheGuard::t_shadow_prep ? t_shadow_segments : graphics_segments;
+    }
     std::vector<MultiRangeSegment> compute_segments;
     u64 frame_tick = 0;
     u64 total_used_memory = 0;

@@ -2180,6 +2180,8 @@ bool TextureCache<P>::ImageCanRescale(ImageBase& image) {
 
 template <class P>
 void TextureCache<P>::InvalidateScale(Image& image) {
+    Common::Nx2PrepLock::WriteScope prep_lock; // P2b: objects are moved out of their slots
+    Common::Nx2PrepLock::NoteErase();
     if (image.scale_tick <= frame_tick) {
         image.scale_tick = frame_tick + 1;
     }
@@ -3385,6 +3387,8 @@ void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
+    Common::Nx2PrepLock::WriteScope prep_lock; // P2b: objects are moved out of their slots
+    Common::Nx2PrepLock::NoteErase();
     ImageBase& image = slot_images[image_id];
     ++images_deleted;
     // Drop every decode still queued for it, whatever IsDecoding says: an image re-decoded while
@@ -3521,6 +3525,8 @@ void TextureCache<P>::RemoveImageViewReferences(std::span<const ImageViewId> rem
 
 template <class P>
 void TextureCache<P>::RemoveFramebuffers(std::span<const ImageViewId> removed_views) {
+    Common::Nx2PrepLock::WriteScope prep_lock; // P2b: objects are moved out of their slots
+    Common::Nx2PrepLock::NoteErase();
     runtime.FlushDeferredClear();
     auto it = framebuffers.begin();
     while (it != framebuffers.end()) {

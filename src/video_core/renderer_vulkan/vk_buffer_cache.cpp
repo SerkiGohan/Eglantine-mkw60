@@ -123,11 +123,19 @@ Buffer::Buffer(BufferCacheRuntime& runtime, DAddr cpu_addr_, u64 size_bytes_,
 }
 
 void Buffer::MarkUsage(u64 offset, u64 size) noexcept {
+    if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+        return; // P2b shadow
+    }
     tracker.Track(offset, size);
     last_usage_tick = scheduler->CurrentTick();
 }
 
 VkBufferView Buffer::View(u32 offset, u32 size, VideoCore::Surface::PixelFormat format) {
+    if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
+        // P2b shadow: the view list grows on the back thread at the same time.
+        Common::Nx2CacheGuard::t_shadow_needs_serial = true;
+        return VK_NULL_HANDLE;
+    }
     if (!device) {
         // Null buffer supported, return a null descriptor
         return VK_NULL_HANDLE;
