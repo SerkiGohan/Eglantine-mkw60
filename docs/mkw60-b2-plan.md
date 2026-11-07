@@ -137,4 +137,5 @@ bindings, descriptors, commands, dirty mask, current pipeline, LRU log. Not cove
   - `VertexBuffer1…10` (no. 17–26): only cleared if the draw uses the slot (~1–2 %), otherwise they stay set → can be determined from the registers (number/use of the vertex streams).
   - `IndexBuffer` (48): only for indexed draws (non-indexed ~30/s).
   - `DepthBiasGlobal` (50): `TouchDepthBias` checks with `||` – if `DepthBias` is set, `DepthBiasGlobal` stays set (short circuit). Rebuild for B3 or turn into a fixed rule.
+- **Image (user): completely normal** in menus and on Mario Bros. Circuit → piece 1 done.
 - Also found (not covered by the guard, for piece 4): own state in the `StateTracker` (topology, stencil values, `stencil_reset`) and `ShaderCache::last_shaders_valid`.
