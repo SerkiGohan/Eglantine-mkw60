@@ -21,6 +21,8 @@
 #include <string>
 
 #include "common/logging.h"
+#include "common/nx2_wait_stats.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #include "core/core.h"
@@ -125,7 +127,7 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     const bool allowed = !safe_reads && !Settings::IsGPULevelHigh() &&
                          Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Vulkan;
     if (active && !allowed) {
-        Drain();
+        Drain(9);
         Stop();
         LOG_INFO(HW_GPU, "GPU thread split: stopped, the accuracy settings need the caches on the front");
         return;
@@ -194,9 +196,13 @@ void GpuSplit::WaitForSpace(size_t words) {
     }
     Publish();
     Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
+    // nx2-waitzones: timeline "front: wait for ring space"
+    namespace Trace = Common::Nx2WaitStats::Trace;
+    const s64 trace_start = Trace::BeginWait();
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (write_position + words - consumed_cache <= RingWords) {
+            Trace::EndWait(Trace::Extra::FrontRingFull, trace_start);
             return;
         }
         if (spins < 4096) {
@@ -220,13 +226,16 @@ void GpuSplit::Publish() {
     }
 }
 
-void GpuSplit::Drain() {
+void GpuSplit::Drain(u32 reason) {
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache == write_position && BackQuiet()) {
         return;
     }
     Publish();
     Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
+    // nx2-waitzones: timeline "front: wait for back (drain)"
+    namespace Trace = Common::Nx2WaitStats::Trace;
+    const s64 trace_start = Trace::BeginWait();
     // Everything consumed is not enough: the back submits deferred work (Scheduler::DeferFlush)
     // from its idle hook afterwards, and the caller may use the scheduler once this returns.
     bool hook_asked = false;
@@ -235,6 +244,7 @@ void GpuSplit::Drain() {
         if (consumed_cache == write_position) {
             if (BackQuiet()) {
                 publish_every = 8;
+                Trace::EndWait(Trace::Extra::FrontDrain, trace_start, reason);
                 return;
             }
             if (!hook_asked) {
@@ -380,6 +390,12 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         u64 available = published.load(std::memory_order_acquire);
         if (available == read_position) {
             Nx2Profile::Scope scope{Nx2Profile::Zone::SplitWait};
+            // nx2-waitzones: timeline "back: wait for front" (spinning + sleeping until new work)
+            namespace Trace = Common::Nx2WaitStats::Trace;
+            const s64 trace_start = Trace::BeginWait();
+            SCOPE_EXIT {
+                Trace::EndWait(Trace::Extra::BackIdle, trace_start);
+            };
             // The front usually sends more within microseconds: spin briefly before sleeping.
             for (u32 spins = 0; spins < 8192 && available == read_position &&
                                 !hook_requested.load(std::memory_order_relaxed);

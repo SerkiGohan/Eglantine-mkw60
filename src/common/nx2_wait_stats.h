@@ -149,12 +149,20 @@ enum class Extra : u16 {
     PresentComposite,                             // present: compose the image
     PresentPace,                                  // present: wait for the frame clock (vblank)
     GpuTick,                                      // graphics card works on submission (tick) N
+    // nx2-waitzones: waits of the front (GPU) and back (GPUBack) GPU threads
+    FrontIdle,     // front: command queue empty, waits for the game
+    FrontPending,  // front: channel waits for a CPU semaphore, yield/1 ms sleep
+    FrontDrain,    // front: waits until the back has processed everything (GpuSplit::Drain)
+    FrontRingFull, // front: ring full, waits for space (GpuSplit::WaitForSpace)
+    BackIdle,      // back: ring empty, waits for the front thread
     Count,
 };
 
 inline const char* NameOf(u16 id) {
-    static constexpr std::array<const char*, 4> extra{
-        "present: wait for frame", "present: composite", "present: vblank pacing", "GPU executes"};
+    static constexpr std::array<const char*, 9> extra{
+        "present: wait for frame", "present: composite", "present: vblank pacing", "GPU executes",
+        "front: wait for game",    "front: wait for semaphore (sleep)",
+        "front: wait for back (drain)", "front: wait for ring space", "back: wait for front"};
     if (id < Names.size()) {
         return Names[id];
     }
@@ -435,6 +443,29 @@ inline void Instant(Site site) {
     Push(Event{now, now, 0, static_cast<u16>(site), 0, 1});
 }
 
+/// nx2-waitzones: measure a wait section. Without EDEN_NX2_WAIT_STATS, Begin() costs only a
+/// bool check; End() adds it to the timeline from 5 us on (shorter ones are too many, e.g. the
+/// spinning of the back thread between two publications).
+inline s64 BeginWait() {
+    return Enabled() ? NowNs() : 0;
+}
+
+// Trigger of a drain (argument "n" of "front: wait for back (drain)"), see trace_summary.py:
+// 0 other, 1 MME DMA read (Maxwell3D::FrontDmaRead), 2 semaphore acquire (Puller), 3 acquire
+// resume (Puller::CanResumeAcquire), 4 MapInOrder (gpu_thread), 5 list fallback
+// (FlushGpuWrittenCommands), 6 Sync Memory Operations, 7 front takeover, 8 FrontVerify, 9 split stop
+inline void EndWait(Extra what, s64 start, u64 arg = 0) {
+    if (start == 0) {
+        return;
+    }
+    const s64 now = NowNs();
+    if (now - start >= 5'000) {
+        Complete(what, start, now, arg);
+    } else {
+        Poll(now);
+    }
+}
+
 } // namespace Trace
 
 inline void Add(Site site, s64 start_ns) {
@@ -456,7 +487,8 @@ inline void AddDuration(Site site, s64 ns) {
     // Timeline: submission trigger as a point in time, worker backlog as a section on its own track
     if (site >= Site::SubmitFence && site <= Site::SubmitOther) {
         Trace::Instant(site);
-    } else if (site == Site::WorkerBacklog && ns > 0) {
+    } else if ((site == Site::WorkerBacklog || site == Site::ListsGpuCopy) && ns > 0) {
+        // nx2-waitzones: also the list wait for the GPU copy (ends at the call)
         const s64 now = NowNs();
         Trace::Complete(site, now - ns, now);
     }

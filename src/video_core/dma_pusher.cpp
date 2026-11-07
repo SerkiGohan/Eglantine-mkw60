@@ -738,7 +738,7 @@ void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     // The caches belong to the split's back: it first runs what the front queued (the dispatch
     // that writes these words among it). The whole pages are flushed: their next lists read
     // guest memory until GPU work writes them again.
-    VideoCommon::GpuSplit::Get().Drain();
+    VideoCommon::GpuSplit::Get().Drain(5);
     const GPUVAddr first_page = address & ~GPUVAddr{0xfff};
     const GPUVAddr end_page = (address + size + 0xfff) & ~GPUVAddr{0xfff};
     if (memory_manager.IsMemoryDirty(first_page, end_page - first_page,

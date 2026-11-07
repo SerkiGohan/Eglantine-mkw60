@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "common/assert.h"
+#include "common/nx2_wait_stats.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/thread.h"
@@ -90,6 +91,12 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     // millisecond before sleeping, or every wait also waits out a host sleep
                     // (title 1 waits ~25 times a second).
                     Profile::Scope scope{Profile::Zone::PendingSleep};
+                    // nx2-waitzones: timeline "front: wait for semaphore (sleep)"
+                    namespace Trace = Common::Nx2WaitStats::Trace;
+                    const s64 trace_start = Trace::BeginWait();
+                    SCOPE_EXIT {
+                        Trace::EndWait(Trace::Extra::FrontPending, trace_start);
+                    };
                     if (const auto wake_limit = PendingWakeLimit(); wake_limit.count() != 0) {
                         Tegra::Nx2PendingWake::Get().WaitFor(wake_seen, wake_limit);
                     } else if (std::chrono::steady_clock::now() - last_progress <
@@ -102,7 +109,11 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 }
             } else {
                 Profile::Scope scope{Profile::Zone::Idle};
+                // nx2-waitzones: timeline "front: wait for game"
+                namespace Trace = Common::Nx2WaitStats::Trace;
+                const s64 trace_start = Trace::BeginWait();
                 state.queue.PopWait(next, stop_token);
+                Trace::EndWait(Trace::Extra::FrontIdle, trace_start);
             }
             if (stop_token.stop_requested()) {
                 break;
@@ -121,7 +132,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     if (run->before_later_reads) {
                         // GPU memory maps unmap caches (UnmapMemory downloads): the back's state.
                         split.DeferFunction(std::move(run->func));
-                        split.Drain();
+                        split.Drain(4);
                     } else {
                         split.DeferFunction(std::move(run->func));
                     }

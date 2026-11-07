@@ -58,8 +58,9 @@ void OnBack(const Func& func) {
     }
 }
 
-void DrainBack() {
-    VideoCommon::GpuSplit::Get().Drain();
+void DrainBack(u32 reason = 2) {
+    // nx2-waitzones: trigger for the timeline (2 = semaphore acquire)
+    VideoCommon::GpuSplit::Get().Drain(reason);
 }
 
 // The fence manager records into the scheduler and downloads the CPU's writes over GPU data:
@@ -90,7 +91,7 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     }
     // The release may still be queued for the split GPU thread's back half (and the caches
     // ReadSemaphoreWord asks are its state).
-    DrainBack();
+    DrainBack(3);
     const u32 current = ReadSemaphoreWord(dma_pusher, pending_acquire->address);
     if (Nx2SemaphoreWaiters::Get().Latched(this)) {
         if (static std::atomic<u32> rescued{};

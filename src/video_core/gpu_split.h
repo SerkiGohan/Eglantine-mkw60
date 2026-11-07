@@ -140,7 +140,8 @@ public:
     /// Makes what was sent visible to the back.
     void Publish();
     /// Waits until the back executed everything sent so far.
-    void Drain();
+    /// nx2-waitzones: `reason` ends up as argument "n" in the timeline (DrainReason).
+    void Drain(u32 reason = 0);
 
     /// Compute or copy work was just sent: what can write GPU-written command lists.
     void NoteWriter() {
