@@ -481,7 +481,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
                        : reason == "configure failed" ? "configure-failed" : "mesh-disabled";
         static std::set<std::tuple<u64, u64, std::string_view>> seen;
         static size_t async_logged{};
-        const auto& regs = maxwell3d->regs;
+        const auto& regs = maxwell3d->DrawRegs(); // B1 step 3: draw context
         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
         const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
         // Say why, and keep the expected asynchronous-shader skips from using up the line budget.
@@ -530,7 +530,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
     const u32 repack_dirty = buffer_cache_runtime.SetVertexRepackLayout(
-        maxwell3d->regs, pipeline->HasDynamicVertexInput());
+        maxwell3d->DrawRegs(), pipeline->HasDynamicVertexInput());
     if (repack_dirty) {
         auto& flags = maxwell3d->dirty.flags;
         flags[VideoCommon::Dirty::VertexBuffers] = true;
@@ -574,12 +574,12 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
 
     query_cache.NotifySegment(true);
     HandleTransformFeedback();
-    query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64, maxwell3d->regs.zpass_pixel_count_enable);
+    query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64, maxwell3d->DrawRegs().zpass_pixel_count_enable);
     // EDEN_NX2_DIAG_SAMPLES: count the samples this draw passes while a draw list is captured. The
     // game's own occlusion counting is left alone (one occlusion query can be active at a time).
     int diag_query = -1;
     if (VideoCommon::Nx2Diag::SamplesEnabled() && g_diag_pool != nullptr &&
-        !maxwell3d->regs.zpass_pixel_count_enable) {
+        !maxwell3d->DrawRegs().zpass_pixel_count_enable) {
         diag_query = VideoCommon::Nx2Diag::Diagnostics::Get().NextQuery();
     }
     if (diag_query >= 0) {
@@ -616,7 +616,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
                      capture, name, address, size,
                      std::count_if(bytes.begin(), bytes.end(), [](u8 byte) { return byte != 0; }));
         };
-        const auto& regs = maxwell3d->regs;
+        const auto& regs = maxwell3d->DrawRegs(); // B1 step 3: draw context
         const auto& rt = regs.rt[0];
         const size_t size = static_cast<size_t>(rt.array_pitch) * 4;
         if (size && size <= 16 * 1024 * 1024) {
@@ -728,6 +728,17 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     if (Tegra::Engines::Maxwell3D::Nx2ReplicaMode() != 0) [[unlikely]] {
         maxwell3d->Nx2SyncReplica(); // B1 step 2: register replica
     }
+    // B1 step 3: with EDEN_NX2_DRAW_REPLICA=3 the preparation reads the replica (DrawRegs).
+    const bool draw_from_replica =
+        Tegra::Engines::Maxwell3D::Nx2ReplicaMode() == 3 && maxwell3d->nx2_replica != nullptr;
+    if (draw_from_replica) [[unlikely]] {
+        Tegra::Engines::Maxwell3D::t_draw_regs = maxwell3d->nx2_replica.get();
+    }
+    SCOPE_EXIT {
+        if (draw_from_replica) [[unlikely]] {
+            Tegra::Engines::Maxwell3D::t_draw_regs = nullptr;
+        }
+    };
     {
         // A draw's first and count can come from memory a skipped (rejected) compute program
         // should have written. Past 16M vertices they are garbage: building the quad index
@@ -752,7 +763,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     // EDEN_NX2_CB24_TRACE: for draws whose vertex shader reads bank 24, show the inline
     // constant buffer upload target (CB_ADDRESS) and its first words.
     if (static const bool trace = std::getenv("EDEN_NX2_CB24_TRACE") != nullptr; trace) {
-        const auto& regs = maxwell3d->regs;
+        const auto& regs = maxwell3d->DrawRegs(); // B1 step 3: draw context
         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
         static u32 logged{};
         if ((vs == 0x11471c9a00 || vs == 0x11471ca600 || vs == 0x11471cd300) && logged++ < 3) {
@@ -785,7 +796,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         return value ? std::strtoull(value, nullptr, 16) : 0ULL;
     }();
     if (trace_vs != 0) {
-        const auto& regs = maxwell3d->regs;
+        const auto& regs = maxwell3d->DrawRegs(); // B1 step 3: draw context
         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
         static u32 traced{};
         if (vs == trace_vs && traced++ % 200 == 0 && traced < 1000) {
@@ -794,7 +805,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     }
     if (Tegra::Engines::g_nx2_trace_draws_after_upscale > 0) {
         --Tegra::Engines::g_nx2_trace_draws_after_upscale;
-        const auto& regs = maxwell3d->regs;
+        const auto& regs = maxwell3d->DrawRegs(); // B1 step 3: draw context
         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
         const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
         LOG_INFO(HW_GPU, "after upscale: draw rt0 {:#x} {}x{} fmt {:#x} block {}/{}/{} pitch_linear {} depth {} array_pitch {:#x} ctrl {:#x} vs {:#x} ps {:#x}",
@@ -837,7 +848,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         return list;
     }();
     if (!skip_list.empty()) {
-        const auto& regs = maxwell3d->regs;
+        const auto& regs = maxwell3d->DrawRegs(); // B1 step 3: draw context
         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
         if (std::find(skip_list.begin(), skip_list.end(), vs) != skip_list.end()) return;
     }
@@ -854,7 +865,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     // EDEN_NX2_RT_TRACE: log the first draw to every distinct colour target (debug aid).
     if (static const bool trace = std::getenv("EDEN_NX2_RT_TRACE") != nullptr; trace) {
         static std::set<std::tuple<GPUVAddr, u32, u32, u64, u64>> seen;
-        const auto& regs = maxwell3d->regs;
+        const auto& regs = maxwell3d->DrawRegs(); // B1 step 3: draw context
         const auto& rt = regs.rt[0];
         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
         const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
@@ -2077,7 +2088,10 @@ bool AccelerateDMA::BufferToImage(const Tegra::DMA::ImageCopy& copy_info,
 }
 
 void RasterizerVulkan::UpdateDynamicStates() {
-    auto& regs = maxwell3d->regs;
+    // B1 step 3: the draw's registers. Not const only because of the AMD logic-op workaround below,
+    // which clears logic_op.enable in place (in the replica with EDEN_NX2_DRAW_REPLICA=3); a
+    // multi-threaded preparer must keep that per thread instead.
+    auto& regs = const_cast<Tegra::Engines::Maxwell3D::Regs&>(maxwell3d->DrawRegs());
     auto& flags = maxwell3d->dirty.flags;
     const auto topology = maxwell3d->draw_manager.draw_state.topology;
     const bool topology_changed = state_tracker.ChangePrimitiveTopology(topology);
@@ -2163,7 +2177,7 @@ void RasterizerVulkan::UpdateDynamicStates() {
 void RasterizerVulkan::HandleTransformFeedback() {
     static std::once_flag warn_unsupported;
 
-    const auto& regs = maxwell3d->regs;
+    const auto& regs = maxwell3d->DrawRegs(); // B1 step 3: draw context
     if (!device.IsExtTransformFeedbackSupported()) {
         if (regs.transform_feedback_enabled != 0) {
             std::call_once(warn_unsupported, [&] {

@@ -104,7 +104,7 @@ void RefreshXfbState(VideoCommon::TransformFeedbackState& state, const Maxwell& 
 } // Anonymous namespace
 
 void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFeatures& features) {
-    const Maxwell& regs = maxwell3d.regs;
+    const Maxwell& regs = maxwell3d.DrawRegs(); // B1 step 3: draw context
     const auto topology_ = maxwell3d.draw_manager.draw_state.topology;
 
     driver_id = features.driver_id;

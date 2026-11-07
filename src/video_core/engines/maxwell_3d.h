@@ -3212,7 +3212,8 @@ public:
 
     /// B1 step 2 (EDEN_NX2_DRAW_REPLICA, nx2 fork mkw60): a second register set kept up to date
     /// only through the registers written since the last draw. 1 keeps it, 2 also compares it with
-    /// the real one before every draw and logs the registers it missed.
+    /// the real one before every draw and logs the registers it missed, 3 keeps it and lets the
+    /// draw preparation read it (DrawRegs).
     static u32 Nx2ReplicaMode();
     void Nx2MarkChanged(u32 method) {
         nx2_changed[method >> 6] |= u64{1} << (method & 63);
@@ -3221,6 +3222,14 @@ public:
     void Nx2SyncReplica();
     std::array<u64, Regs::NUM_REGS / 64> nx2_changed{};
     std::unique_ptr<Regs> nx2_replica;
+
+    /// B1 step 3 (draw context): the registers the draw being prepared on this thread reads. Points
+    /// at the replica while RasterizerVulkan::Draw runs with EDEN_NX2_DRAW_REPLICA=3; otherwise the
+    /// live registers.
+    static inline thread_local const Regs* t_draw_regs{};
+    [[nodiscard]] const Regs& DrawRegs() const {
+        return t_draw_regs != nullptr ? *t_draw_regs : regs;
+    }
 
     bool ShouldExecute() const {
         return execute_on;
