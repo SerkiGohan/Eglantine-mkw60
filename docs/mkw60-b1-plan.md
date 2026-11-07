@@ -97,3 +97,13 @@ Marking in `ProcessDirtyRegisters` is enough for MKW; direct field writes (e.g. 
 `ProcessCBMultiData`) hit registers that are marked before the next draw anyway, because the replica copies
 the current value at draw time. Keep the check mode running in later tests (other tracks, open world).
 
+
+## Result of step 3 (7.11.2026, fork up to `9ff1a87c99`)
+
+Preparation paths read registers through `Maxwell3D::DrawRegs()` (thread_local pointer, otherwise live): `RasterizerVulkan::Draw`/
+`PrepareDraw`/dynamic state, `FixedPipelineState::Refresh`, `ConfigureImpl`, buffer/texture cache, shader cache,
+pipeline cache and `GraphicsEnvironment` (shader_environment.cpp). Check with `EDEN_NX2_DRAW_REPLICA=4`: during the draw the live
+registers show the state of the **previous** draw. The first run crashed in the menu (pipeline translation in
+`GraphicsEnvironment` still read live, among others `post_vtg_shader_attrib_skip_mask` → Sirit `OpAccessChain`). After the fix: **menus
+and Mario Bros. Circuit identical**, no crash. Not redirected yet: constant buffer bindings (`state.shader_stages`),
+`draw_manager.draw_state` (they go into the snapshot in B3).
