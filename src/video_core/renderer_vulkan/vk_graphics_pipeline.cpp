@@ -17,6 +17,7 @@
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 
 #include "common/bit_field.h"
+#include "common/scope_exit.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -696,6 +697,11 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         Profile::Scope scope{Profile::Zone::DescriptorAcquire};
         guest_descriptor_queue.Acquire(scheduler, num_descriptor_entries, uses_descriptor_buffer);
     }
+    // B2 step 3, piece 3: with EDEN_NX2_DESC_WRITER=1 the draw writes its descriptors into its own
+    // reserved range until here.
+    SCOPE_EXIT {
+        guest_descriptor_queue.EndReservation();
+    };
 
     RescalingPushConstant rescaling;
     RenderAreaPushConstant render_area;

@@ -58,12 +58,26 @@ public:
                  bool use_descriptor_buffer_ = false);
 
     const DescriptorUpdateEntry* UpdateData() const noexcept {
-        return upload_start;
+        return t_reservation != nullptr ? t_reservation->begin : upload_start;
     }
+
+    /// B2 step 3, piece 3 (fork mkw60, EDEN_NX2_DESC_WRITER=1): a draw reserves exactly the
+    /// entries its pipeline needs when it acquires, and writes them through its own cursor
+    /// instead of the shared one. Parallel preparers can then fill their ranges at the same time;
+    /// only the reservation (and the frame wrap) stays shared. EndReservation checks that the draw
+    /// wrote exactly what it reserved (more would land in the next draw's range).
+    static bool Nx2WriterEnabled();
+    struct Reservation {
+        DescriptorUpdateEntry* begin{};
+        DescriptorUpdateEntry* cursor{};
+        DescriptorUpdateEntry* end{};
+    };
+    static inline thread_local Reservation* t_reservation{};
+    void EndReservation() noexcept;
 
     void AddSampledImage(VkImageView image_view, VkSampler sampler) {
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue); // B2 cache guard
-        *(payload_cursor++) = VkDescriptorImageInfo{
+        *(Cursor()++) = VkDescriptorImageInfo{
             .sampler = sampler,
             .imageView = image_view,
             .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -72,7 +86,7 @@ public:
 
     void AddImage(VkImageView image_view) {
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue); // B2 cache guard
-        *(payload_cursor++) = VkDescriptorImageInfo{
+        *(Cursor()++) = VkDescriptorImageInfo{
             .sampler = VK_NULL_HANDLE,
             .imageView = image_view,
             .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -81,7 +95,7 @@ public:
 
     void AddBuffer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size) {
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue); // B2 cache guard
-        *(payload_cursor++) = VkDescriptorBufferInfo{
+        *(Cursor()++) = VkDescriptorBufferInfo{
             .buffer = buffer,
             .offset = offset,
             .range = size,
@@ -95,7 +109,7 @@ public:
             return;
         }
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue); // B2 cache guard
-        *(payload_cursor++) = DescriptorAddress{
+        *(Cursor()++) = DescriptorAddress{
             .address = base_address == 0 ? 0 : base_address + offset,
             .range = base_address == 0 ? VK_WHOLE_SIZE : size,
             .format = VK_FORMAT_UNDEFINED,
@@ -104,7 +118,7 @@ public:
 
     void AddTexelBuffer(VkBufferView texel_buffer) {
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue); // B2 cache guard
-        *(payload_cursor++) = texel_buffer;
+        *(Cursor()++) = texel_buffer;
     }
 
     void AddTexelBuffer(VkBufferView texel_buffer, VkDeviceAddress base_address,
@@ -114,7 +128,7 @@ public:
             return;
         }
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue); // B2 cache guard
-        *(payload_cursor++) = DescriptorAddress{
+        *(Cursor()++) = DescriptorAddress{
             .address = base_address == 0 ? 0 : base_address + offset,
             .range = base_address == 0 ? VK_WHOLE_SIZE : size,
             .format = format,
@@ -122,6 +136,16 @@ public:
     }
 
 private:
+    DescriptorUpdateEntry*& Cursor() noexcept {
+        return t_reservation != nullptr ? t_reservation->cursor : payload_cursor;
+    }
+
+    Reservation reservation{};
+    struct WriterStats {
+        u64 draws{}, fallbacks{}, overflows{}, short_writes{}, entries{};
+        s64 last_report{};
+    } writer_stats{};
+
     const Device& device;
     const size_t frame_payload_size;
     const bool supports_descriptor_buffer;

@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include <cstdlib>
 #include <variant>
 #include <boost/container/static_vector.hpp>
 
@@ -52,6 +54,69 @@ void UpdateDescriptorQueue::Acquire(Scheduler& scheduler, size_t required_entrie
         payload_cursor = payload_start;
     }
     upload_start = payload_cursor;
+    if (Nx2WriterEnabled() && t_reservation == nullptr) [[unlikely]] {
+        if (required_entries == 0) {
+            ++writer_stats.fallbacks;
+            return;
+        }
+        reservation.begin = payload_cursor;
+        reservation.cursor = payload_cursor;
+        reservation.end = payload_cursor + required_entries;
+        payload_cursor = reservation.end;
+        t_reservation = &reservation;
+    }
+}
+
+bool UpdateDescriptorQueue::Nx2WriterEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_DESC_WRITER");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+void UpdateDescriptorQueue::EndReservation() noexcept {
+    if (t_reservation != &reservation) {
+        return;
+    }
+    t_reservation = nullptr;
+    auto& stats = writer_stats;
+    ++stats.draws;
+    const auto written = reservation.cursor - reservation.begin;
+    const auto reserved = reservation.end - reservation.begin;
+    stats.entries += static_cast<u64>(written);
+    if (written > reserved) [[unlikely]] {
+        ++stats.overflows;
+        // Keep the shared cursor behind what was written (one thread: nothing else wrote there).
+        payload_cursor = reservation.cursor;
+    } else if (written < reserved) {
+        ++stats.short_writes;
+    }
+    if ((stats.draws & 4095) != 0) {
+        return;
+    }
+    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    if (stats.last_report == 0) {
+        stats = {};
+        stats.last_report = now;
+        return;
+    }
+    if (now - stats.last_report < 10'000'000'000LL) {
+        return;
+    }
+    const double seconds = static_cast<double>(now - stats.last_report) / 1e9;
+    LOG_INFO(Render_Vulkan,
+             "Descriptor writer: Draws {:.0f}/s, entries {:.1f}/draw | more than reserved {:.0f}/s, "
+             "fewer {:.0f}/s, without reservation {:.0f}/s",
+             static_cast<double>(stats.draws) / seconds,
+             static_cast<double>(stats.entries) / static_cast<double>(stats.draws),
+             static_cast<double>(stats.overflows) / seconds,
+             static_cast<double>(stats.short_writes) / seconds,
+             static_cast<double>(stats.fallbacks) / seconds);
+    stats = {};
+    stats.last_report = now;
 }
 
 } // namespace Vulkan
