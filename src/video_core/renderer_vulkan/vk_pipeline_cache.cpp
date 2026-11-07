@@ -1001,7 +1001,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                                            envs_ = std::move(deferred.second)]() mutable {
                 bool build = !background_stop.load(std::memory_order_relaxed);
                 if (build) {
-                    std::scoped_lock lock{background_mutex};
+                    std::scoped_lock claim_lock{background_mutex};
                     build = !background_claimed.contains(key);
                 }
                 std::unique_ptr<GraphicsPipeline> pipeline;
@@ -1013,7 +1013,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                     }
                     pipeline = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), nullptr, false);
                 }
-                std::unique_lock lock{background_mutex};
+                std::unique_lock ready_lock{background_mutex};
                 if (pipeline && !background_claimed.contains(key)) {
                     background_ready.emplace(key, std::move(pipeline));
                 }
@@ -1028,7 +1028,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                     background_claimed.clear();
                     background_active.store(false, std::memory_order_release);
                 }
-                lock.unlock();
+                ready_lock.unlock();
                 // A pipeline dropped here was never bound, so no GPU work can still use it.
                 pipeline.reset();
             });
