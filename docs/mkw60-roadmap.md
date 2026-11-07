@@ -54,3 +54,4 @@ by register; pre-parse command lists in parallel; process channels separately wh
 | 7.11.2026 | B2 step 3 piece 4 pipeline/scheduler/LRU | Key per context, scheduler/StateTracker state reset, LRU deferred; all 4 pieces together, switch after every draw: no rendering errors, not slower → **B2 step 3 done** |
 | 7.11.2026 | P1 splitting ConfigureImpl | Serial part (incl. render targets, uniform copy) before the preparation (`EDEN_NX2_PREP_SPLIT=1`), with all B2 switches: image normal; only 0.3–0.6 % of draws "heavy" (buffer uploads) |
 | 7.11.2026 | P2 shadow reader (with locks) | A second thread recomputes every 32nd draw from the snapshot: ~352,000 comparisons, 0 mismatches in the race (1 while loading: buffers merged in the meantime), image optimal |
+| 7.11.2026 | P2b shadow reader without locks | Every 4th draw recomputed concurrently (~19,000/s): ~3.07 million comparisons, 0 mismatches, no crash, image ok → **B2 done** |

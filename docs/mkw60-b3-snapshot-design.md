@@ -163,3 +163,15 @@ So it pays off to make the serial chunks cheaper on the side (uniform copy, flus
 - Next step P2b: shadow reader **without** cache locks. Needed for that: a read lock for preparers against structural changes
   (reader-writer lock around `CreateBuffer`/`DeleteBuffer`/image creation/`slot_vector` growth), the caches' shared helper vectors
   (`graphics_segments`, `upload_copies`, `Buffer::View` cache) per thread.
+
+## Result of P2b, shadow reader without cache locks (7.11.2026 ~18:20, Mario Bros. Circuit, fork `47e5975748`, log `~/mkw-perf/fork/p2b-shadow-lockfree-mario.log`)
+
+- `EDEN_NX2_PREP_SHADOW=4` (every 4th draw, ~18,000–19,600 jobs/s in the race) with all switches, **concurrently** with the back
+  thread, only the new preparer lock against structural changes: **no crash, no rendering errors** (user).
+- **~3.07 million compared draws in 23 windows: 0 mismatches** (count, entries, bindings). 22 jobs skipped because something was deleted
+  since the snapshot ("stale"), queue never full, "serial needed" 0 (also never `Buffer::View`: MKW uses no texel buffers in
+  these draws).
+- FPS meanwhile 30–40 (user) – test overhead: context switch after every draw, 14 KB register copy for every 4th draw (~270 MB/s),
+  dirty copy, check counters. Not a measure for P3.
+- **B2 is done with this** (step 4: second reader without a crash, 0 mismatches). The caches cope with concurrent reads as long as
+  structural changes wait for the preparers.
