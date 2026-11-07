@@ -50,3 +50,4 @@ by register; pre-parse command lists in parallel; process channels separately wh
 | 7.11.2026 | B2 step 2 guard | The parallel part only writes binding state (~35/draw), descriptors (~10), commands (~4.6), dirty clears (~5.7), pipeline (0.2), LRU (0.07); buffer creation ~5/s → everything can be kept per preparer, fallback for creation |
 | 7.11.2026 | B2 step 3 piece 1 dirty mask | The preparation works on a copy of the dirty flags (`EDEN_NX2_DIRTY_SNAPSHOT=1`): 0 direct changes, image normal; conditionally consumed flags: vertex buffer slots, index buffer, DepthBiasGlobal |
 | 7.11.2026 | B2 step 3 piece 2 binding contexts | Buffer cache bindings per context (`EDEN_NX2_PREP_CONTEXTS`), test with a switch after every draw: image perfect |
+| 7.11.2026 | B2 step 3 piece 3 descriptors | Own reserved range per draw (`EDEN_NX2_DESC_WRITER=1`); after the crash fix, together with pieces 1+2 (switch after every draw): image perfect, 0 deviations from the reservation |

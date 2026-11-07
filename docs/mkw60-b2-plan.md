@@ -150,3 +150,17 @@ bindings, descriptors, commands, dirty mask, current pipeline, LRU log. Not cove
   **image perfect** (user, menu + Mario Bros. Circuit), no errors in the log. Draws/s in the race as usual (~80,000–93,000).
 - Consequence for B3: the binding state of the buffer cache can be kept cleanly per preparer; rebuilding it on takeover
   is cheap enough that even blocks of 1 go unnoticed.
+
+## Result of step 3, piece 3: descriptor reservation per draw (7.11.2026 ~16:10, Mario Bros. Circuit, fork `e76da1d9d8`, log `~/mkw-perf/fork/b2-desc-writer-mario.log`)
+
+- `EDEN_NX2_DESC_WRITER=1`: after `Acquire`, `ConfigureImpl` reserves exactly `num_descriptor_entries` (`UpdateDescriptorQueue::Reserve`) and
+  writes through its own pointer; only the reservation and the frame wrap stay shared (in B3 an atomic addition).
+- The first attempt crashed while loading (`8fe19463a7`): reservation in every `Acquire` (also compute pipelines, never finished) and
+  a `thread_local` pointer for **all** queues → the BC encoder pass (ASTC → BC3) wrote into a foreign range, RADV crash in the worker.
+  Lesson: always bind thread-local redirections to their owner.
+- With the fix, **together with the dirty copy and a context switch after every draw** (`EDEN_NX2_DIRTY_SNAPSHOT=1 EDEN_NX2_PREP_CONTEXTS=2
+  EDEN_NX2_PREP_BLOCK=1 EDEN_NX2_DESC_WRITER=1`): **image perfect** (user), ~15 entries/draw in the race, **0 draws with more or fewer
+  entries than reserved**, 0 without reservation, dirty copy still 0 direct changes.
+- Still open for B3: uniform entries are created in the serial part (uniform copy) in between the entries of the parallel part
+  (order per stage) → pass them as finished entries in the snapshot. `GraphicsPipeline::last_descriptor_payload` (comparison with
+  the last draw of the same pipeline) → piece 4.
