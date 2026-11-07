@@ -703,8 +703,8 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
     : GenericEnvironment{gpu_memory_, program_base_, start_address_}, maxwell3d{&maxwell3d_} {
     gpu_memory->ReadBlock(program_base + start_address, &sph, sizeof(sph));
     initial_offset = sizeof(sph);
-    texture_bound = maxwell3d->regs.bindless_texture_const_buffer_slot;
-    const auto& regs{maxwell3d->regs};
+    texture_bound = maxwell3d->DrawRegs().bindless_texture_const_buffer_slot;
+    const auto& regs{maxwell3d->DrawRegs()};
     const bool native{maxwell3d->GetNativeMacroEngine().native_turing};
     static const bool geometry_enabled = [] {
         const char* value = std::getenv("EDEN_NX2_EXPERIMENTAL_GEOMETRY");
@@ -733,7 +733,7 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
         }
         InitializeNativeCode(std::move(lowered_native_), 128, geometry);
     }
-    gp_passthrough_mask = maxwell3d->regs.post_vtg_shader_attrib_skip_mask;
+    gp_passthrough_mask = maxwell3d->DrawRegs().post_vtg_shader_attrib_skip_mask;
     switch (program) {
     case Maxwell::ShaderType::VertexA:
         stage = Shader::Stage::VertexA;
@@ -823,7 +823,7 @@ std::optional<Shader::ReplaceConstant> GraphicsEnvironment::GetReplaceConstBuffe
 }
 
 Shader::TextureType GraphicsEnvironment::ReadTextureType(u32 handle) {
-    const auto& regs{maxwell3d->regs};
+    const auto& regs{maxwell3d->DrawRegs()};
     const bool via_header_index{regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding};
     auto entry =
         ReadTextureInfo(regs.tex_header.Address(), regs.tex_header.limit, via_header_index, handle);
@@ -833,7 +833,7 @@ Shader::TextureType GraphicsEnvironment::ReadTextureType(u32 handle) {
 }
 
 Shader::TexturePixelFormat GraphicsEnvironment::ReadTexturePixelFormat(u32 handle) {
-    const auto& regs{maxwell3d->regs};
+    const auto& regs{maxwell3d->DrawRegs()};
     const bool via_header_index{regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding};
     auto entry =
         ReadTextureInfo(regs.tex_header.Address(), regs.tex_header.limit, via_header_index, handle);
@@ -848,7 +848,7 @@ bool GraphicsEnvironment::IsTexturePixelFormatInteger(u32 handle) {
 }
 
 u32 GraphicsEnvironment::ReadViewportTransformState() {
-    const auto& regs{maxwell3d->regs};
+    const auto& regs{maxwell3d->DrawRegs()};
     viewport_transform_state = regs.viewport_scale_offset_enabled;
     return viewport_transform_state;
 }
