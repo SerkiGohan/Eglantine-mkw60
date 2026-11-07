@@ -58,6 +58,9 @@ enum class Zone : u32 {
     InlineUpload, ///< inline-to-memory uploads (launch_dma, inline_data)
     ConsumeSink,  ///< batched state writes applied before an executed method
     ComputeMethod, ///< compute engine methods (QMDs, releases) outside the dispatch itself
+    // B2 step 1 (fork mkw60): split of the draw preparation, see nx2_prep_cost_probe.h
+    SyncBuffer,   ///< BufferCache::SynchronizeBuffer (CPU-modified pages? upload)
+    Uniforms,     ///< BufferCache::BindHostGraphicsUniformBuffers (uniform copy into the ring)
     Count,
 };
 
@@ -70,6 +73,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
     "fence skipped", "method", "split drain", "split wait",
     "cb data", "cb bind", "query report", "inline upload", "consume sink", "compute method",
+    "sync buffer", "uniforms",
 };
 
 // Read once at startup: Enabled() runs several times per method write (no guard to check).
@@ -78,6 +82,12 @@ inline const bool g_enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
 inline bool Enabled() {
     return g_enabled;
 }
+
+} // namespace VideoCommon::Nx2Profile
+
+#include "video_core/nx2_prep_cost_probe.h"
+
+namespace VideoCommon::Nx2Profile {
 
 // Nanoseconds; from the host's own counter where the wall clock reads it directly (the zones
 // run ~150,000 times a second, and QueryPerformanceCounter cost ~5% of the GPU thread).
@@ -102,12 +112,17 @@ public:
     explicit Scope(Zone zone_) : zone{zone_}, enabled{Enabled()} {
         if (enabled) [[unlikely]] {
             Begin();
+        } else if (Nx2PrepCost::g_enabled) [[unlikely]] {
+            prep = Nx2PrepCost::Begin(static_cast<u32>(zone), static_cast<u32>(Zone::Draw),
+                                      prep_parent);
         }
     }
 
     ~Scope() {
         if (enabled) [[unlikely]] {
             End();
+        } else if (prep) [[unlikely]] {
+            Nx2PrepCost::End(static_cast<u32>(zone), static_cast<u32>(Zone::Draw), prep_parent);
         }
     }
 
@@ -142,6 +157,8 @@ private:
 
     Zone zone;
     bool enabled;
+    bool prep{};         ///< B2 step 1: timed by Nx2PrepCost (inside a draw, profile off)
+    u32 prep_parent{};
     u64 start{};
     u64 parent_child_ns{};
 };
