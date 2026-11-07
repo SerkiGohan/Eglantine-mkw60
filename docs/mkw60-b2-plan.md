@@ -80,3 +80,31 @@ descriptors (`PushImageDescriptors`, buffer descriptors), dynamic state, recordi
 - Split measured and decision recorded (step 1).
 - The guard shows no shared writes in the parallel part any more.
 - Shadow reader: 0 mismatches, no crash.
+
+## Result of step 1 (7.11.2026 ~13:55, time trial on Mario Bros. Circuit against the Nintendo ghost, fork `eef8bcee5a`, `EDEN_NX2_PREP_COST_PROBE=1`, log `~/mkw-perf/fork/b2-prep-cost-mario.log`)
+
+Race (10 lines of 10 s each, ~80,000–95,000 draws/s), wall-clock time inside the draws, exclusive, ms/s:
+
+| serial | ms/s | parallelizable | ms/s |
+|---|---|---|---|
+| uniform copy | 63–70 | resolving buffers (`update buffers` without SynchronizeBuffer) | 51–58 |
+| `flush work` (FlushWork + FlushCaching per draw) | 46–50 | rest of `Draw` (PrepareDraw, locks, index/query) | 31–39 |
+| image views (read TIC, look up, PrepareImage) | 38–45 | dynamic state | 18–21 |
+| SynchronizeBuffer | 34–52 | rest of `ConfigureImpl` | 15–17 |
+| handles/SSBO pointers/samplers | 30–37 | pipeline lookup | 13–16 |
+| render targets | 12–14 | writing descriptors | 11–14 |
+| texture uploads | 2–22 | stage bindings without uniforms | 8–10 |
+| descriptor tables | ~2 | ConfigureDraw, recording, acquire | ~9 |
+| **total** | **~240–270 (≈ 60 %)** | **total** | **~150–185 (≈ 40 %)** |
+
+Draw total ~400–445 ms/s (4.6–5.5 µs/draw), measurement overhead estimated at ~20–24 ms/s.
+
+**Caution, absolute numbers too high:** perf (user CPU cycles only) saw `RasterizerVulkan::Draw` at ~258 ms/s, the probe measures
+wall-clock time (with kernel time, preemption/blocking in locks, measurement overhead). The **ratio** is reliable: ~40 % of the
+draw time can be parallelized → on a perf basis **~105 ms/s CPU**, by wall clock up to ~175 ms/s.
+
+**Decision:** threshold (~80 ms/s) just exceeded → B2 continues as planned, but the gain of B3 alone would be
+limited (back ~13–20 % lighter). Besides that, **making serial parts cheaper** pays off, independent of B3:
+`flush work` ~48 ms/s per draw (FlushCaching/invalidation on every draw), `SynchronizeBuffer` ~36 ms/s (page check,
+almost never an upload), uniform copy ~65 ms/s. Open question: how much of the wall-clock difference to perf is blocking (lock in
+`Draw`, submission in `flush work`)?
