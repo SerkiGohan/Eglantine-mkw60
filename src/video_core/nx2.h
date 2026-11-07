@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -347,6 +349,47 @@ inline u64 Nx2SemaphoreMirror(u64 address) {
     return 0;
 }
 
+/// Wakes the GPU thread while it waits on suspended channels (Scheduler::ResumePending), instead of
+/// letting it sleep up to a millisecond: on every semaphore write (Nx2SemaphoreWaiters::OnWrite), when the
+/// split's back finishes a batch, and on every new command. CPU writes to a semaphore send nothing: the
+/// wait is capped (EDEN_NX2_PENDING_WAKE_US, default 200; 0 = the old yield/1 ms sleep).
+class Nx2PendingWake {
+public:
+    static Nx2PendingWake& Get() {
+        static Nx2PendingWake wake;
+        return wake;
+    }
+
+    [[nodiscard]] u64 Generation() const {
+        return generation.load(std::memory_order_acquire);
+    }
+
+    void Notify() {
+        generation.fetch_add(1, std::memory_order_seq_cst);
+        if (waiting.load(std::memory_order_seq_cst)) {
+            std::scoped_lock lk{mutex};
+            cv.notify_all();
+        }
+    }
+
+    /// Waits at most `limit` for a Notify() after `seen`. True when woken.
+    bool WaitFor(u64 seen, std::chrono::microseconds limit) {
+        std::unique_lock lk{mutex};
+        waiting.store(true, std::memory_order_seq_cst);
+        const bool woke = cv.wait_for(lk, limit, [this, seen] {
+            return generation.load(std::memory_order_seq_cst) != seen;
+        });
+        waiting.store(false, std::memory_order_relaxed);
+        return woke;
+    }
+
+private:
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::atomic<u64> generation{0};
+    std::atomic<bool> waiting{false};
+};
+
 /// Channels suspended on a semaphore acquire. A console channel polls and sees every release;
 /// Eden writes releases in bursts when fences signal and resumes waiters only between command
 /// lists, so an acquire-equal could miss its value. Writes latch the waiters they satisfy.
@@ -389,6 +432,8 @@ public:
 
     /// A GPU write of `value` to the u32 at `device_address`.
     void OnWrite(u64 device_address, u32 value) {
+        // A release can let a suspended channel go on
+        Nx2PendingWake::Get().Notify();
         if (count.load(std::memory_order_acquire) == 0) {
             return;
         }

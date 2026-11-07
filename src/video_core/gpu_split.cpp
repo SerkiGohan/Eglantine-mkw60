@@ -438,6 +438,8 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         }
         g_back_busy.store(false, std::memory_order_release);
         consumed.store(read_position, std::memory_order_release);
+        // A finished batch may have released what a waiting front checks for
+        Tegra::Nx2PendingWake::Get().Notify();
     }
     back_running.store(false, std::memory_order_release);
 }

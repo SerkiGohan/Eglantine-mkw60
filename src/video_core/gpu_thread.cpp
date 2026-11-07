@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include <cstdlib>
 #include <thread>
 
 #include "common/assert.h"
@@ -18,6 +19,7 @@
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/gpu_split.h"
+#include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/renderer_base.h"
@@ -25,6 +27,18 @@
 namespace VideoCommon::GPUThread {
 
 namespace {
+
+// How long the GPU thread waits for a wake-up (Tegra::Nx2PendingWake) while channels are suspended:
+// EDEN_NX2_PENDING_WAKE_US, default 200 us (about 1 ms per frame faster in Mario Kart World than the
+// old yield/1 ms sleep); 0 keeps the old behaviour.
+std::chrono::microseconds PendingWakeLimit() {
+    static const std::chrono::microseconds limit = [] {
+        const char* value = std::getenv("EDEN_NX2_PENDING_WAKE_US");
+        const long parsed = value != nullptr ? std::strtol(value, nullptr, 10) : 200;
+        return std::chrono::microseconds{parsed < 0 ? 0 : (parsed > 100'000 ? 100'000 : parsed)};
+    }();
+    return limit;
+}
 
 // Tells a CPU thread waiting in PushCommand that its command ran.
 void SignalCommand(SynchState& state, u64 fence, bool block) {
@@ -64,6 +78,8 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             Profile::Report();
             split.MaybeStart(system);
             if (scheduler.HasPendingChannels()) {
+                // Taken before the checks, so a wake-up in between is not lost
+                const u64 wake_seen = Tegra::Nx2PendingWake::Get().Generation();
                 // Suspended channels wait on semaphores the CPU releases: poll them meanwhile.
                 {
                     Profile::Scope scope{Profile::Zone::ResumePending};
@@ -74,8 +90,10 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     // millisecond before sleeping, or every wait also waits out a host sleep
                     // (title 1 waits ~25 times a second).
                     Profile::Scope scope{Profile::Zone::PendingSleep};
-                    if (std::chrono::steady_clock::now() - last_progress <
-                        std::chrono::microseconds{500}) {
+                    if (const auto wake_limit = PendingWakeLimit(); wake_limit.count() != 0) {
+                        Tegra::Nx2PendingWake::Get().WaitFor(wake_seen, wake_limit);
+                    } else if (std::chrono::steady_clock::now() - last_progress <
+                               std::chrono::microseconds{500}) {
                         std::this_thread::yield();
                     } else {
                         std::this_thread::sleep_for(std::chrono::milliseconds{1});
@@ -193,6 +211,8 @@ u64 ThreadManager::PushCommand(CommandData&& command_data, bool block, bool is_a
     std::unique_lock lk(state.write_lock);
     const u64 fence{++state.last_fence};
     state.queue.EmplaceWait(std::move(command_data), fence, block);
+    // A GPU thread waiting on suspended channels picks the command up at once
+    Tegra::Nx2PendingWake::Get().Notify();
 
     if (block) {
         state.cv.wait(lk, thread.get_stop_token(), [this, fence] {
