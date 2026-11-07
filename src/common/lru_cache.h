@@ -6,14 +6,44 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <deque>
 #include <memory>
 #include <type_traits>
+#include <vector>
 
 #include "common/common_types.h"
 #include "common/nx2_cache_guard.h"
 
 namespace Common {
+
+/// B2 step 3, piece 4 (fork mkw60, EDEN_NX2_LRU_DEFER=1): while a draw is prepared, LRU touches are
+/// collected per thread and applied at the end of the draw (parallel preparers must not relink
+/// the shared list). Nx2LruDefer::Flush applies them; Free drops pending touches of its item.
+namespace Nx2LruDefer {
+inline const bool g_enabled = [] {
+    const char* value = std::getenv("EDEN_NX2_LRU_DEFER");
+    return value != nullptr && value[0] == '1';
+}();
+struct Entry {
+    void* cache;
+    size_t id;
+    u64 tick;
+    void (*apply)(void*, size_t, u64);
+};
+inline thread_local bool t_active = false;
+inline thread_local std::vector<Entry> t_log;
+inline u64 g_deferred = 0; ///< statistics (back thread)
+inline u64 g_dropped = 0;
+inline void Flush() {
+    t_active = false;
+    for (const Entry& entry : t_log) {
+        entry.apply(entry.cache, entry.id, entry.tick);
+    }
+    g_deferred += t_log.size();
+    t_log.clear();
+}
+} // namespace Nx2LruDefer
 
 template <class Traits>
 class LeastRecentlyUsedCache {
@@ -42,6 +72,18 @@ public:
     }
 
     void Touch(size_t id, TickType tick) {
+        if (Nx2LruDefer::t_active) [[unlikely]] {
+            Nx2LruDefer::t_log.push_back({this, id, static_cast<u64>(tick), &ApplyDeferredTouch});
+            return;
+        }
+        TouchNow(id, tick);
+    }
+
+    static void ApplyDeferredTouch(void* cache, size_t id, u64 tick) {
+        static_cast<LeastRecentlyUsedCache*>(cache)->TouchNow(id, static_cast<TickType>(tick));
+    }
+
+    void TouchNow(size_t id, TickType tick) {
         auto& item = item_pool[id];
         if (item.tick >= tick) {
             return;
@@ -57,6 +99,14 @@ public:
 
     void Free(size_t id) {
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::LruInsertFree); // B2 cache guard
+        if (!Nx2LruDefer::t_log.empty()) [[unlikely]] {
+            auto& log = Nx2LruDefer::t_log;
+            const auto before = log.size();
+            std::erase_if(log, [&](const Nx2LruDefer::Entry& entry) {
+                return entry.cache == this && entry.id == id;
+            });
+            Nx2LruDefer::g_dropped += before - log.size();
+        }
         auto& item = item_pool[id];
         Detach(item);
         item.prev = nullptr;

@@ -190,6 +190,7 @@ private:
     bool FrameDumpBuffers(bool compute, std::span<const u64> shader_hashes);
 
     void UpdateDynamicStates();
+    void Nx2SwitchPrepContext();
 
     void HandleTransformFeedback();
 

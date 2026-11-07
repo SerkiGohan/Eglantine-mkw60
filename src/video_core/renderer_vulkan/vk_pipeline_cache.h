@@ -179,6 +179,15 @@ private:
 
     GraphicsPipelineCacheKey graphics_key{};
     GraphicsPipeline* current_pipeline{};
+
+public:
+    /// B2 step 3, piece 4 (test, EDEN_NX2_PREP_CONTEXTS>1): the preparer context changes. The
+    /// pipeline key is per context (the new one gets its own, stale from its last draw), the
+    /// current pipeline and the shader stages are looked up again (dirty flags set by the caller).
+    void Nx2SwitchContext(u32 from, u32 to);
+
+private:
+    std::array<GraphicsPipelineCacheKey, 4> nx2_context_keys{};
     mutable const char* graphics_miss{"no-pipeline"};
 
     /// Destroys graphics pipelines unused for a while, once the GPU is done with them.

@@ -2662,13 +2662,15 @@ u32 BufferCache<P>::Nx2PrepBlock() {
 /// its host uniform binding cache is reset and its index/vertex buffers are resolved again
 /// (dirty flags set). If anything else depends on the previous draw, the picture breaks.
 template <class P>
-void BufferCache<P>::Nx2BeginDraw() {
+bool BufferCache<P>::Nx2BeginDraw() {
     const u32 contexts = Nx2PrepContexts();
     if (contexts <= 1 || !channel_state) {
-        return;
+        return false;
     }
     ++nx2_prep_draws;
+    bool switched = false;
     if (nx2_prep_draws % Nx2PrepBlock() == 0) {
+        switched = true;
         channel_state->active_context = (channel_state->active_context + 1) % contexts;
         ++nx2_prep_switches;
         GraphicsBindings& gfx = Gfx();
@@ -2684,7 +2686,7 @@ void BufferCache<P>::Nx2BeginDraw() {
         }
     }
     if ((nx2_prep_draws & 4095) != 0) {
-        return;
+        return switched;
     }
     const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now().time_since_epoch())
@@ -2693,18 +2695,25 @@ void BufferCache<P>::Nx2BeginDraw() {
         nx2_prep_last_report = now;
         nx2_prep_draws = 0;
         nx2_prep_switches = 0;
-        return;
+        return switched;
     }
     if (now - nx2_prep_last_report < 10'000'000'000LL) {
-        return;
+        return switched;
     }
     const double seconds = static_cast<double>(now - nx2_prep_last_report) / 1e9;
-    LOG_INFO(HW_GPU, "Prep contexts: {} contexts, block {} | Draws {:.0f}/s, switches {:.0f}/s",
+    LOG_INFO(HW_GPU,
+             "Prep contexts: {} contexts, block {} | Draws {:.0f}/s, switches {:.0f}/s | LRU "
+             "deferred {:.0f}/s, dropped {}",
              contexts, Nx2PrepBlock(), static_cast<double>(nx2_prep_draws) / seconds,
-             static_cast<double>(nx2_prep_switches) / seconds);
+             static_cast<double>(nx2_prep_switches) / seconds,
+             static_cast<double>(Common::Nx2LruDefer::g_deferred) / seconds,
+             Common::Nx2LruDefer::g_dropped);
+    Common::Nx2LruDefer::g_deferred = 0;
+    Common::Nx2LruDefer::g_dropped = 0;
     nx2_prep_last_report = now;
     nx2_prep_draws = 0;
     nx2_prep_switches = 0;
+    return switched;
 }
 
 template <class P>

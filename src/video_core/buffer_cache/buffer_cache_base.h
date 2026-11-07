@@ -627,8 +627,12 @@ private:
 public:
     static u32 Nx2PrepContexts();
     static u32 Nx2PrepBlock();
-    /// Called at the start of every draw (RasterizerVulkan::Draw/DrawIndirect).
-    void Nx2BeginDraw();
+    /// Called at the start of every draw (RasterizerVulkan::Draw/DrawIndirect); true when the
+    /// draw switched to another context.
+    bool Nx2BeginDraw();
+    [[nodiscard]] u32 Nx2ActiveContext() const noexcept {
+        return channel_state != nullptr ? channel_state->active_context : 0;
+    }
 private:
     u64 nx2_prep_draws = 0;
     u64 nx2_prep_switches = 0;

@@ -737,6 +737,17 @@ bool PipelineCache::IsIndirectResetShader() const {
            info->lowered_native->diagnostic_key == reset_key;
 }
 
+void PipelineCache::Nx2SwitchContext(u32 from, u32 to) {
+    if (from >= nx2_context_keys.size() || to >= nx2_context_keys.size()) {
+        return;
+    }
+    nx2_context_keys[from] = graphics_key;
+    graphics_key = nx2_context_keys[to];
+    current_pipeline = nullptr;
+    shader_infos = {};
+    last_shaders_valid = false;
+}
+
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
 
     if (!RefreshStages(graphics_key.unique_hashes)) {

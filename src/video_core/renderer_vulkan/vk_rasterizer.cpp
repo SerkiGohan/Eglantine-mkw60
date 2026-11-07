@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/nx2_cache_guard.h"
+#include "common/lru_cache.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -729,10 +730,19 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     // B2 step 3: with EDEN_NX2_DIRTY_SNAPSHOT=1 the draw works on a copy of the dirty flags.
     Tegra::Engines::Maxwell3D::Nx2DrawDirtyScope dirty_scope{*maxwell3d};
     if (decltype(buffer_cache)::Nx2PrepContexts() > 1) [[unlikely]] {
-        // B2 step 3, piece 2b (test): binding contexts in turn, see BufferCache::Nx2BeginDraw.
-        std::scoped_lock prep_lock{buffer_cache.mutex};
-        buffer_cache.Nx2BeginDraw();
+        Nx2SwitchPrepContext();
     }
+    // B2 step 3, piece 4: with EDEN_NX2_LRU_DEFER=1 LRU touches wait for the end of the draw.
+    const bool lru_defer = Common::Nx2LruDefer::g_enabled && !Common::Nx2LruDefer::t_active;
+    if (lru_defer) [[unlikely]] {
+        Common::Nx2LruDefer::t_active = true;
+    }
+    SCOPE_EXIT {
+        if (lru_defer) [[unlikely]] {
+            std::scoped_lock lru_lock{buffer_cache.mutex, texture_cache.mutex};
+            Common::Nx2LruDefer::Flush();
+        }
+    };
     Common::Nx2CacheGuard::SetDirtyFlags(&maxwell3d->DrawDirty()); // B2 cache guard
     if (Tegra::Engines::Maxwell3D::Nx2ReplicaMode() != 0) [[unlikely]] {
         maxwell3d->Nx2SyncReplica(); // B1 step 2: register replica
@@ -944,15 +954,44 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     });
 }
 
+/// B2 step 3 (test, EDEN_NX2_PREP_CONTEXTS>1, one thread): draws use the preparer contexts in turn,
+/// as parallel preparers would. A context taking over knows nothing of the other contexts' draws
+/// nor of the host command buffer state: buffer bindings (BufferCache::Nx2BeginDraw), pipeline key
+/// and lookup (PipelineCache::Nx2SwitchContext), bound pipeline and dynamic state
+/// (Scheduler::InvalidateState) start over, and the dirty flags behind key and shaders are set.
+void RasterizerVulkan::Nx2SwitchPrepContext() {
+    std::scoped_lock prep_lock{buffer_cache.mutex};
+    const u32 from = buffer_cache.Nx2ActiveContext();
+    if (!buffer_cache.Nx2BeginDraw()) {
+        return;
+    }
+    pipeline_cache.Nx2SwitchContext(from, buffer_cache.Nx2ActiveContext());
+    scheduler.InvalidateState();
+    auto& flags = maxwell3d->DrawDirty();
+    flags[VideoCommon::Dirty::Shaders] = true;
+    flags[Dirty::ViewportSwizzles] = true;
+    flags[Dirty::VertexInput] = true;
+    flags[Dirty::Blending] = true;
+}
+
 void RasterizerVulkan::DrawIndirect() {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
     // B2 step 3: with EDEN_NX2_DIRTY_SNAPSHOT=1 the draw works on a copy of the dirty flags.
     Tegra::Engines::Maxwell3D::Nx2DrawDirtyScope dirty_scope{*maxwell3d};
     if (decltype(buffer_cache)::Nx2PrepContexts() > 1) [[unlikely]] {
-        // B2 step 3, piece 2b (test): binding contexts in turn, see BufferCache::Nx2BeginDraw.
-        std::scoped_lock prep_lock{buffer_cache.mutex};
-        buffer_cache.Nx2BeginDraw();
+        Nx2SwitchPrepContext();
     }
+    // B2 step 3, piece 4: with EDEN_NX2_LRU_DEFER=1 LRU touches wait for the end of the draw.
+    const bool lru_defer = Common::Nx2LruDefer::g_enabled && !Common::Nx2LruDefer::t_active;
+    if (lru_defer) [[unlikely]] {
+        Common::Nx2LruDefer::t_active = true;
+    }
+    SCOPE_EXIT {
+        if (lru_defer) [[unlikely]] {
+            std::scoped_lock lru_lock{buffer_cache.mutex, texture_cache.mutex};
+            Common::Nx2LruDefer::Flush();
+        }
+    };
     Common::Nx2CacheGuard::SetDirtyFlags(&maxwell3d->DrawDirty()); // B2 cache guard
     const auto& params = maxwell3d->draw_manager.indirect_state;
     if (VideoCommon::Nx2Diag::Active()) {
