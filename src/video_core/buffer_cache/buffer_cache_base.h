@@ -625,6 +625,10 @@ private:
         }
     }
 public:
+    /// P1 (EDEN_NX2_PREP_SPLIT=1): BindHostStageBuffers in two parts, uniforms (serial part,
+    /// resolves them first) and storage/texel buffers (preparation).
+    void Nx2BindStageUniforms(size_t stage);
+    void Nx2BindStageBuffersWithoutUniforms(size_t stage);
     static u32 Nx2PrepContexts();
     static u32 Nx2PrepBlock();
     /// Called at the start of every draw (RasterizerVulkan::Draw/DrawIndirect); true when the

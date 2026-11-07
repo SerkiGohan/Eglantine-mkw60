@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <memory>
 #include <variant>
 #include <vector>
@@ -77,6 +78,26 @@ public:
     void Reserve(size_t entries);
     void EndReservation() noexcept;
 
+    /// P1 (EDEN_NX2_PREP_SPLIT=1): this queue's entries go to `buffer` until EndCapture, which
+    /// returns how many were written (the serial part makes the uniform entries before the
+    /// preparation acquires). AddEntries copies such entries into the current draw's range.
+    void BeginCapture(DescriptorUpdateEntry* buffer, size_t capacity) noexcept {
+        capture = {buffer, buffer, buffer + capacity};
+        t_reservation = &capture;
+    }
+    size_t EndCapture() noexcept {
+        if (t_reservation == &capture) {
+            t_reservation = nullptr;
+        }
+        return static_cast<size_t>(capture.cursor - capture.begin);
+    }
+    void AddEntries(const DescriptorUpdateEntry* entries, size_t count) noexcept {
+        Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue, count); // B2 cache guard
+        DescriptorUpdateEntry*& cursor = Cursor();
+        std::copy_n(entries, count, cursor);
+        cursor += count;
+    }
+
     void AddSampledImage(VkImageView image_view, VkSampler sampler) {
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::DescriptorQueue); // B2 cache guard
         *(Cursor()++) = VkDescriptorImageInfo{
@@ -140,10 +161,12 @@ public:
 private:
     DescriptorUpdateEntry*& Cursor() noexcept {
         // Only this queue's reservation: compute passes inside a draw use other queues.
-        return t_reservation == &reservation ? reservation.cursor : payload_cursor;
+        return t_reservation == &reservation || t_reservation == &capture ? t_reservation->cursor
+                                                                           : payload_cursor;
     }
 
     Reservation reservation{};
+    Reservation capture{};
     struct WriterStats {
         u64 draws{}, fallbacks{}, overflows{}, short_writes{}, entries{};
         s64 last_report{};

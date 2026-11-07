@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <bit>
 #include <cstring>
 #include <iostream>
@@ -391,8 +392,76 @@ void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
     transitions.push_back(transition);
 }
 
+namespace {
+/// P1 (fork mkw60, docs/mkw60-b3-snapshot-design.md): EDEN_NX2_PREP_SPLIT=1 runs the serial part of
+/// ConfigureImpl (guest memory at draw time, render targets, uniform copies) first, as a snapshot
+/// would, and the preparation after it. A draw whose preparation still uploads or creates
+/// something would have to run serially ("heavy"); counted here, logged as "Prep split".
+bool Nx2PrepSplit() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_PREP_SPLIT");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+struct Nx2PrepSplitStats {
+    u64 draws{}, heavy{}, buffer_uploads{}, buffer_creates{}, texture_uploads{}, texture_creates{};
+    u64 uniform_entries{};
+    s64 last_report{};
+};
+
+void Nx2NotePrepSplit(const VideoCommon::Nx2MutationProbe::Counters& before, size_t uniform_entries) {
+    static Nx2PrepSplitStats stats;
+    const auto& now_counters = VideoCommon::Nx2MutationProbe::t_counters;
+    const u64 buffer_uploads = now_counters.buffer_uploads - before.buffer_uploads;
+    const u64 buffer_creates = now_counters.buffer_creates - before.buffer_creates;
+    const u64 texture_uploads = now_counters.texture_uploads - before.texture_uploads;
+    const u64 texture_creates = now_counters.texture_creates - before.texture_creates;
+    ++stats.draws;
+    stats.uniform_entries += uniform_entries;
+    if (buffer_uploads + buffer_creates + texture_uploads + texture_creates != 0) {
+        ++stats.heavy;
+        stats.buffer_uploads += buffer_uploads != 0 ? 1 : 0;
+        stats.buffer_creates += buffer_creates != 0 ? 1 : 0;
+        stats.texture_uploads += texture_uploads != 0 ? 1 : 0;
+        stats.texture_creates += texture_creates != 0 ? 1 : 0;
+    }
+    if ((stats.draws & 4095) != 0) {
+        return;
+    }
+    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    if (stats.last_report == 0) {
+        stats = {};
+        stats.last_report = now;
+        return;
+    }
+    if (now - stats.last_report < 10'000'000'000LL) {
+        return;
+    }
+    const double seconds = static_cast<double>(now - stats.last_report) / 1e9;
+    LOG_INFO(Render_Vulkan,
+             "Prep split: Draws {:.0f}/s, uniform entries {:.1f}/draw | preparation would have to be serial "
+             "(heavy) {:.0f}/s = {:.2f} % | of which buffer upload {:.0f}/s, new buffer {:.0f}/s, "
+             "texture upload {:.0f}/s, new texture {:.0f}/s",
+             static_cast<double>(stats.draws) / seconds,
+             static_cast<double>(stats.uniform_entries) / static_cast<double>(stats.draws),
+             static_cast<double>(stats.heavy) / seconds,
+             100.0 * static_cast<double>(stats.heavy) / static_cast<double>(stats.draws),
+             static_cast<double>(stats.buffer_uploads) / seconds,
+             static_cast<double>(stats.buffer_creates) / seconds,
+             static_cast<double>(stats.texture_uploads) / seconds,
+             static_cast<double>(stats.texture_creates) / seconds);
+    stats = {};
+    stats.last_report = now;
+}
+} // namespace
+
 template <typename Spec>
 bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
+    const bool prep_split = Nx2PrepSplit();
     // M1 draw-repeat probe (nx2_draw_repeat_probe.h)
     const bool repeat_probe = Nx2DrawRepeatProbe::Enabled();
     const s64 repeat_start = repeat_probe ? Nx2DrawRepeatProbe::NowNs() : 0;
@@ -551,6 +620,37 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         Profile::Scope scope{Profile::Zone::FillImageViews};
         texture_cache.FillImageViews(std::span(views.data(), views.size()), false,
                                      Spec::has_images);
+    }
+    // P1: the rest of the serial part (render targets, uniform copies) before the preparation.
+    // The uniform descriptor entries are kept per stage and put in place by prepare_stage.
+    std::array<DescriptorUpdateEntry, 5 * 18 + 6> split_uniform_entries;
+    std::array<u32, 5> split_uniform_begin{};
+    std::array<u32, 5> split_uniform_end{};
+    VideoCommon::Nx2MutationProbe::Counters split_before{};
+    if (prep_split) [[unlikely]] {
+        {
+            Profile::Scope scope{Profile::Zone::RenderTargets};
+            texture_cache.UpdateRenderTargets(false);
+            texture_cache.CheckFeedbackLoop(
+                std::span<const VideoCommon::ImageViewInOut>{views.data(), views.size()});
+        }
+        guest_descriptor_queue.BeginCapture(split_uniform_entries.data(),
+                                            split_uniform_entries.size());
+        size_t captured = 0;
+        for (size_t stage = 0; stage < 5; ++stage) {
+            if (!Spec::enabled_stages[stage]) {
+                continue;
+            }
+            split_uniform_begin[stage] = static_cast<u32>(captured);
+            buffer_cache.Nx2BindStageUniforms(stage);
+            captured = guest_descriptor_queue.EndCapture();
+            guest_descriptor_queue.BeginCapture(split_uniform_entries.data() + captured,
+                                                split_uniform_entries.size() - captured);
+            split_uniform_end[stage] = static_cast<u32>(captured);
+        }
+        (void)guest_descriptor_queue.EndCapture();
+        // Preparation from here: what it uploads or creates makes the draw "heavy".
+        split_before = VideoCommon::Nx2MutationProbe::t_counters;
     }
     u64 repeat_input = 0;
     u64 repeat_output = 0;
@@ -713,7 +813,14 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     const auto prepare_stage{[&](size_t stage) LAMBDA_FORCEINLINE {
         {
             Profile::Scope scope{Profile::Zone::BindStageBuffers};
-            buffer_cache.BindHostStageBuffers(stage);
+            if (prep_split) [[unlikely]] {
+                guest_descriptor_queue.AddEntries(
+                    split_uniform_entries.data() + split_uniform_begin[stage],
+                    split_uniform_end[stage] - split_uniform_begin[stage]);
+                buffer_cache.Nx2BindStageBuffersWithoutUniforms(stage);
+            } else {
+                buffer_cache.BindHostStageBuffers(stage);
+            }
         }
         {
             Profile::Scope scope{Profile::Zone::PushDescriptors};
@@ -749,11 +856,17 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         buffer_cache.runtime.PostCopyBarrier();
         buffer_cache.any_buffer_uploaded = false;
     }
-    {
+    if (!prep_split) {
         Profile::Scope scope{Profile::Zone::RenderTargets};
         texture_cache.UpdateRenderTargets(false);
         texture_cache.CheckFeedbackLoop(
             std::span<const VideoCommon::ImageViewInOut>{views.data(), views.size()});
+    } else {
+        size_t uniform_entries = 0;
+        for (size_t stage = 0; stage < 5; ++stage) {
+            uniform_entries += split_uniform_end[stage] - split_uniform_begin[stage];
+        }
+        Nx2NotePrepSplit(split_before, uniform_entries);
     }
     if (IsBuilt() && !pipeline) {
         return false;

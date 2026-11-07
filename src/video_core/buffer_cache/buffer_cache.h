@@ -524,6 +524,23 @@ void BufferCache<P>::BindHostStageBuffers(size_t stage) {
 }
 
 template <class P>
+void BufferCache<P>::Nx2BindStageUniforms(size_t stage) {
+    BufferOperations([&]() { UpdateUniformBuffers(stage); });
+    VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Uniforms};
+    BindHostGraphicsUniformBuffers(stage);
+}
+
+template <class P>
+void BufferCache<P>::Nx2BindStageBuffersWithoutUniforms(size_t stage) {
+    if (Gfx().enabled_storage_buffers[stage] != 0) {
+        BindHostGraphicsStorageBuffers(stage);
+    }
+    if (Gfx().enabled_texture_buffers[stage] != 0) {
+        BindHostGraphicsTextureBuffers(stage);
+    }
+}
+
+template <class P>
 void BufferCache<P>::BindHostComputeBuffers() {
     BindHostComputeUniformBuffers();
     if (channel_state->enabled_compute_storage_buffers != 0) {
