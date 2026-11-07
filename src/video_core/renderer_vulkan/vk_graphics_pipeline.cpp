@@ -32,6 +32,7 @@
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "common/settings.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/renderer_vulkan/nx2_draw_repeat_probe.h"
 
 #if defined(__clang__) && defined(NDEBUG)
 #define LAMBDA_FORCEINLINE __attribute__((always_inline))
@@ -388,6 +389,9 @@ void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
 
 template <typename Spec>
 bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
+    // M1 draw-repeat probe (nx2_draw_repeat_probe.h)
+    const bool repeat_probe = Nx2DrawRepeatProbe::Enabled();
+    const s64 repeat_start = repeat_probe ? Nx2DrawRepeatProbe::NowNs() : 0;
     boost::container::small_vector<VideoCommon::ImageViewInOut, 160> views;
     boost::container::small_vector<VideoCommon::SamplerId, 96> samplers;
     views.reserve(num_image_elements);
@@ -510,6 +514,34 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         Profile::Scope scope{Profile::Zone::FillImageViews};
         texture_cache.FillImageViews(std::span(views.data(), views.size()), false,
                                      Spec::has_images);
+    }
+    u64 repeat_input = 0;
+    u64 repeat_output = 0;
+    if (repeat_probe) [[unlikely]] {
+        namespace Probe = Nx2DrawRepeatProbe;
+        repeat_input = Probe::Mix(0, reinterpret_cast<u64>(this));
+        for (size_t stage = 0; stage < Spec::enabled_stages.size(); ++stage) {
+            if (!Spec::enabled_stages[stage]) {
+                continue;
+            }
+            for (const auto& cb : maxwell3d->state.shader_stages[stage].const_buffers) {
+                if (cb.enabled) {
+                    repeat_input = Probe::Mix(repeat_input, cb.address);
+                    repeat_input = Probe::Mix(repeat_input, cb.size);
+                }
+            }
+        }
+        repeat_input = Probe::HashBytes(repeat_input, &regs.vertex_streams, sizeof(regs.vertex_streams));
+        repeat_input = Probe::HashBytes(repeat_input, &regs.index_buffer, sizeof(regs.index_buffer));
+        repeat_input = Probe::HashBytes(repeat_input, &regs.rt, sizeof(regs.rt));
+        repeat_input = Probe::HashBytes(repeat_input, &regs.zeta, sizeof(regs.zeta));
+        for (const auto& view : views) {
+            repeat_input = Probe::Mix(repeat_input, view.index);
+            repeat_output = Probe::Mix(repeat_output, view.id.index);
+        }
+        for (const auto& sampler : samplers) {
+            repeat_output = Probe::Mix(repeat_output, sampler.index);
+        }
     }
     if (RecordingSampledTextures()) {
         sampled_images.clear();
@@ -682,7 +714,11 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         return false;
     }
     Profile::Scope scope{Profile::Zone::ConfigureDraw};
-    return ConfigureDraw(rescaling, render_area);
+    const bool configured = ConfigureDraw(rescaling, render_area);
+    if (repeat_probe) [[unlikely]] {
+        Nx2DrawRepeatProbe::Note(repeat_input, repeat_output, repeat_start);
+    }
+    return configured;
 }
 
 bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
