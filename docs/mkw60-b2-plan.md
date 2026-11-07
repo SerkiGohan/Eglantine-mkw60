@@ -164,3 +164,18 @@ bindings, descriptors, commands, dirty mask, current pipeline, LRU log. Not cove
 - Still open for B3: uniform entries are created in the serial part (uniform copy) in between the entries of the parallel part
   (order per stage) → pass them as finished entries in the snapshot. `GraphicsPipeline::last_descriptor_payload` (comparison with
   the last draw of the same pipeline) → piece 4.
+
+## Result of step 3, piece 4: pipeline/scheduler state per context, LRU log (7.11.2026, Mario Bros. Circuit, fork `f27dacd19b`, log `~/mkw-perf/fork/b2-piece4-mario.log`)
+
+- On a context switch additionally: pipeline key per context (stale from the context's own last draw), look up the current pipeline and shader stages
+  again, `Scheduler::InvalidateState` (bound pipeline, rescaling, descriptor buffer, StateTracker: dynamic state,
+  topology, stencil), dirty flags `Shaders`, `VertexInput`, `Blending`, `ViewportSwizzles` set. `EDEN_NX2_LRU_DEFER=1`: LRU touches
+  collected per draw and applied at the end.
+- **All four pieces together, switch after every draw** (`EDEN_NX2_DIRTY_SNAPSHOT=1 EDEN_NX2_PREP_CONTEXTS=2 EDEN_NX2_PREP_BLOCK=1
+  EDEN_NX2_DESC_WRITER=1 EDEN_NX2_LRU_DEFER=1`): **no rendering errors, not noticeably slower** (user). Draws/s in the race 73,000–86,000
+  (as usual), descriptors 0 mismatches, dirty copy 0 direct changes.
+- LRU: ~1.6 million deferred touches/s (~20 per draw, of which only ~0.75 real relinks – the rest are repeats within the same frame);
+  0–1 dropped per 10 s (buffer deleted in the same draw). For B3: filter out same-frame touches before logging.
+- **Step 3 is done with this.** Known for B3: pass uniform entries from the serial part in the snapshot;
+  `GraphicsPipeline::last_descriptor_payload`/`last_descriptor_buffer_*` per preparer or locked; the AMD logic op workaround writes
+  into the replica (per preparer).

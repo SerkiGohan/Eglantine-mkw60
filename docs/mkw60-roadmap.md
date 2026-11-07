@@ -51,3 +51,4 @@ by register; pre-parse command lists in parallel; process channels separately wh
 | 7.11.2026 | B2 step 3 piece 1 dirty mask | The preparation works on a copy of the dirty flags (`EDEN_NX2_DIRTY_SNAPSHOT=1`): 0 direct changes, image normal; conditionally consumed flags: vertex buffer slots, index buffer, DepthBiasGlobal |
 | 7.11.2026 | B2 step 3 piece 2 binding contexts | Buffer cache bindings per context (`EDEN_NX2_PREP_CONTEXTS`), test with a switch after every draw: image perfect |
 | 7.11.2026 | B2 step 3 piece 3 descriptors | Own reserved range per draw (`EDEN_NX2_DESC_WRITER=1`); after the crash fix, together with pieces 1+2 (switch after every draw): image perfect, 0 deviations from the reservation |
+| 7.11.2026 | B2 step 3 piece 4 pipeline/scheduler/LRU | Key per context, scheduler/StateTracker state reset, LRU deferred; all 4 pieces together, switch after every draw: no rendering errors, not slower → **B2 step 3 done** |
