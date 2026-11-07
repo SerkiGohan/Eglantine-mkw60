@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <thread>
+#include "common/nx2_wait_stats.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -225,6 +226,9 @@ void PhysicalCore::LogBacktrace(KernelCore& kernel) {
 }
 
 void PhysicalCore::Idle(KernelCore& kernel) {
+    // Wait statistics: how long did this core have nothing to do?
+    const Common::Nx2WaitStats::Scope wait_scope{static_cast<Common::Nx2WaitStats::Site>(
+        m_core_index < 8 ? m_core_index : 7)};
     // Guest job systems hand work between cores many times per frame; blocking at once adds the
     // host's thread wake-up latency to every handoff. EDEN_NX2_IDLE_SPIN_US=<n>: poll for that
     // many microseconds before blocking. Switch 2 titles poll 100 us by default outside Android

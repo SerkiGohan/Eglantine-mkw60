@@ -30,6 +30,7 @@
 #include "common/assert.h"
 #include "shader_recompiler/exception.h"
 #include "common/logging.h"
+#include "common/nx2_wait_stats.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -1407,6 +1408,7 @@ void RasterizerVulkan::FlushAll() {}
 
 void RasterizerVulkan::SubmitNx2ListCopies() {
     if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick()) && !scheduler.DeferFlush()) {
+        Common::Nx2WaitStats::TagNextSubmit(Common::Nx2WaitStats::Site::SubmitLists);
         scheduler.Flush();
     }
 }
@@ -1690,6 +1692,7 @@ void RasterizerVulkan::FlushCommands() {
     // Fences with downloads or queries come here right after queueing: ~9,400 a second in
     // Hyrule Warriors: Age of Imprisonment fights. Batched like the fences themselves.
     if (!scheduler.DeferFlush()) {
+        Common::Nx2WaitStats::TagNextSubmit(Common::Nx2WaitStats::Site::SubmitCommands);
         scheduler.Flush();
     }
 }
@@ -1999,6 +2002,7 @@ void RasterizerVulkan::FlushWork() {
         scheduler.DispatchWork();
         return;
     }
+    Common::Nx2WaitStats::TagNextSubmit(Common::Nx2WaitStats::Site::SubmitDraws);
     scheduler.Flush();
     draw_counter = 0;
 }
@@ -2017,6 +2021,7 @@ bool AccelerateDMA::BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64 
     buffer_cache.Nx2CollectListCopies(true);
     const bool copied = buffer_cache.DMACopy(src_address, dest_address, amount);
     if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick())) {
+        Common::Nx2WaitStats::TagNextSubmit(Common::Nx2WaitStats::Site::SubmitLists);
         scheduler.Flush();
     }
     buffer_cache.Nx2CollectListCopies(false);

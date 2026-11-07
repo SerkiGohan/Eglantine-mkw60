@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "core/hle/kernel/k_spin_lock.h"
+#include "common/nx2_wait_stats.h"
 
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
@@ -42,6 +43,7 @@ void KSpinLock::Lock() {
     }
     // Mark the lock contended and sleep until it is released; taken this way it stays marked,
     // so its Unlock wakes the next sleeper.
+    const Common::Nx2WaitStats::Scope wait_scope{Common::Nx2WaitStats::Site::SpinLockSleep};
     while (m_state.exchange(2, std::memory_order_acquire) != 0) {
         m_state.wait(2, std::memory_order_relaxed);
     }

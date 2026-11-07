@@ -26,6 +26,8 @@
 #include <utility>
 #include <vector>
 
+#include "common/nx2_wait_stats.h"
+
 #include "common/alignment.h"
 #include "common/div_ceil.h"
 #include "common/game_presets.h"
@@ -211,6 +213,7 @@ private:
 
     // Map nodes are stable, so a registered action can hold a reference to its request.
     struct SlotRequest {
+        s64 requested_ns{}; // wait statistics: when the game asked
         u32 syncpoint{};
         std::atomic<bool> pending{};
         Tegra::Host1x::SyncpointManager::ActionHandle handle{};
@@ -249,6 +252,8 @@ private:
         // decoded frame and aborted when the decoder had none.
         event->Clear(system.Kernel());
         request.syncpoint = syncpoint;
+        request.requested_ns =
+            Common::Nx2WaitStats::Enabled() ? Common::Nx2WaitStats::NowNs() : 0;
         request.pending = true;
         auto& manager = system.Host1x().GetSyncpointManager();
         // The action runs on the GPU thread under the manager's lock, or inline if the value is
@@ -261,6 +266,12 @@ private:
                     return;
                 }
                 request.pending = false;
+                if (request.requested_ns != 0) {
+                    // Under 2 us: the GPU was already there, the notification came at once (inline).
+                    using namespace Common::Nx2WaitStats;
+                    const bool immediate = NowNs() - request.requested_ns < 2'000;
+                    Add(immediate ? Site::SlotImmediate : Site::SlotLatency, request.requested_ns);
+                }
                 event->Signal(kernel);
             });
         TipcReplyWords(ctx, {});

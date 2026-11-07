@@ -23,6 +23,7 @@
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "common/nx2_wait_stats.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace Tegra {
@@ -695,6 +696,7 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
         return false;
     }
     if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+        const Common::Nx2WaitStats::Scope wait_scope{Common::Nx2WaitStats::Site::ListsWriters};
         split.WaitForWriters();
     }
     using GpuWrittenList = VideoCore::RasterizerInterface::GpuWrittenList;
@@ -731,6 +733,8 @@ void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     if (!IsGpuWrittenCommands(address, size)) {
         return;
     }
+    // Wait statistics: the expensive fallback (drain + write back), until the end of the function
+    const Common::Nx2WaitStats::Scope wait_scope{Common::Nx2WaitStats::Site::ListsFlush};
     // The caches belong to the split's back: it first runs what the front queued (the dispatch
     // that writes these words among it). The whole pages are flushed: their next lists read
     // guest memory until GPU work writes them again.

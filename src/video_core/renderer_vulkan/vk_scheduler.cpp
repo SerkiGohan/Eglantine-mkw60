@@ -13,6 +13,7 @@
 
 #include <fmt/format.h>
 
+#include "common/nx2_wait_stats.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 
 #include "common/logging.h"
@@ -89,6 +90,7 @@ bool Scheduler::DeferFlush() {
 
 void Scheduler::FlushDeferred() {
     if (flush_pending) {
+        Common::Nx2WaitStats::TagNextSubmit(Common::Nx2WaitStats::Site::SubmitDeferred);
         Flush();
     }
 }
@@ -435,8 +437,20 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
     InvalidateState();
 
     const u64 signal_value = master_semaphore->NextTick();
+    // Wait statistics: the time at which the back thread finishes this submission
+    Common::Nx2WaitStats::NoteFlush(signal_value);
+    Common::Nx2WaitStats::CountSubmit();
     RecordWithUploadBuffer([signal_semaphore, wait_semaphore, signal_value,
                             this](vk::CommandBuffer cmdbuf, vk::CommandBuffer upload_cmdbuf) {
+        // Here in the VulkanWorker all commands before it are recorded: how long did that take?
+        if (Common::Nx2WaitStats::Enabled()) {
+            const s64 flushed = Common::Nx2WaitStats::FlushTime(signal_value);
+            const s64 now = Common::Nx2WaitStats::NowNs();
+            if (flushed > 0 && now - flushed < 1'000'000'000) {
+                Common::Nx2WaitStats::AddDuration(Common::Nx2WaitStats::Site::WorkerBacklog,
+                                                  now - flushed);
+            }
+        }
         static constexpr VkMemoryBarrier WRITE_BARRIER{
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .pNext = nullptr,
@@ -452,8 +466,13 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
         }
 
         std::scoped_lock lock{submit_mutex};
-        switch (const VkResult result = master_semaphore->SubmitQueue(
-                    cmdbuf, upload_cmdbuf, signal_semaphore, wait_semaphore, signal_value)) {
+        VkResult submit_result;
+        {
+            const Common::Nx2WaitStats::Scope submit_scope{Common::Nx2WaitStats::Site::VkSubmit};
+            submit_result = master_semaphore->SubmitQueue(cmdbuf, upload_cmdbuf, signal_semaphore,
+                                                          wait_semaphore, signal_value);
+        }
+        switch (const VkResult result = submit_result) {
         case VK_SUCCESS:
             // Log successful queue submission
             if (GPU::Logging::IsActive() &&

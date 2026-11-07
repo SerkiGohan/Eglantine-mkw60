@@ -9,6 +9,7 @@
 
 #include "common/assert.h"
 #include "common/logging.h"
+#include "common/nx2_wait_stats.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "video_core/nx2_profile.h"
@@ -214,7 +215,13 @@ void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
         OnBack([rasterizer = dma_pusher.rasterizer] { rasterizer->ReleaseFences(); });
         break;
     case Puller::FenceOperation::Increment:
-        OnBack([rasterizer = dma_pusher.rasterizer, id = static_cast<u32>(regs.fence_action.syncpoint_id.Value())] {
+        // Wait statistics: the time at which the front thread queues the increment.
+        // Measured on the back thread = how long it stood in the queue.
+        OnBack([rasterizer = dma_pusher.rasterizer, id = static_cast<u32>(regs.fence_action.syncpoint_id.Value()),
+                queued = Common::Nx2WaitStats::Enabled() ? Common::Nx2WaitStats::NowNs() : s64{0}] {
+            if (queued != 0) {
+                Common::Nx2WaitStats::Add(Common::Nx2WaitStats::Site::BackDelay, queued);
+            }
             rasterizer->SignalSyncPoint(id);
         });
         break;

@@ -126,6 +126,12 @@ public:
     /// Waits for a submitted tick without flushing: safe on threads other than the GPU thread.
     void WaitSubmittedTick(u64 tick);
 
+    /// Queries the GPU progress directly (without sleeping): has the tick been reached?
+    bool PollSubmittedTick(u64 tick);
+
+    /// Has the tick been submitted to the GPU (no longer deferred)?
+    bool IsSubmittedTick(u64 tick) const;
+
     void Finish();
 
     u64 GetDeviceLocalMemory() const;

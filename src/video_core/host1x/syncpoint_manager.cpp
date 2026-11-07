@@ -5,10 +5,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "video_core/host1x/syncpoint_manager.h"
+#include "common/nx2_wait_stats.h"
 
 namespace Tegra {
 
 namespace Host1x {
+
+namespace {
+// Measures only the WAIT for the lock, not the time it is held.
+s64 GuardWaitStart() {
+    return Common::Nx2WaitStats::Enabled() ? Common::Nx2WaitStats::NowNs() : 0;
+}
+void GuardWaitEnd(s64 start) {
+    if (start != 0) {
+        Common::Nx2WaitStats::Add(Common::Nx2WaitStats::Site::SyncptGuardWait, start);
+    }
+}
+} // Anonymous namespace
 
 SyncpointManager::ActionHandle SyncpointManager::RegisterAction(
     std::atomic<u32>& syncpoint, std::list<RegisteredAction>& action_storage, u32 expected_value,
@@ -18,11 +31,14 @@ SyncpointManager::ActionHandle SyncpointManager::RegisterAction(
         return {};
     }
 
+    const s64 wait_start = GuardWaitStart();
     std::scoped_lock lk(guard);
+    GuardWaitEnd(wait_start);
     if (syncpoint.load(std::memory_order_relaxed) >= expected_value) {
         action();
         return {};
     }
+    Common::Nx2WaitStats::NoteActions(action_storage.size() + 1);
     auto it = action_storage.begin();
     while (it != action_storage.end()) {
         if (it->expected_value >= expected_value) {
@@ -35,7 +51,9 @@ SyncpointManager::ActionHandle SyncpointManager::RegisterAction(
 
 void SyncpointManager::DeregisterAction(std::list<RegisteredAction>& action_storage,
                                         const ActionHandle& handle) {
+    const s64 wait_start = GuardWaitStart();
     std::scoped_lock lk(guard);
+    GuardWaitEnd(wait_start);
 
     // We want to ensure the iterator still exists prior to erasing it
     // Otherwise, if an invalid iterator was passed in then it could lead to UB
@@ -77,14 +95,19 @@ void SyncpointManager::Increment(std::atomic<u32>& syncpoint, std::condition_var
                                  std::list<RegisteredAction>& action_storage) {
     auto new_value{syncpoint.fetch_add(1, std::memory_order_acq_rel) + 1};
 
+    const s64 wait_start = GuardWaitStart();
     std::scoped_lock lk(guard);
-    auto it = action_storage.begin();
-    while (it != action_storage.end()) {
-        if (it->expected_value > new_value) {
-            break;
+    GuardWaitEnd(wait_start);
+    {
+        const Common::Nx2WaitStats::Scope actions_scope{Common::Nx2WaitStats::Site::SyncptActions};
+        auto it = action_storage.begin();
+        while (it != action_storage.end()) {
+            if (it->expected_value > new_value) {
+                break;
+            }
+            it->action();
+            it = action_storage.erase(it);
         }
-        it->action();
-        it = action_storage.erase(it);
     }
     wait_cv.notify_all();
 }
@@ -96,6 +119,7 @@ void SyncpointManager::Wait(std::atomic<u32>& syncpoint, std::condition_variable
         return;
     }
 
+    const Common::Nx2WaitStats::Scope wait_scope{Common::Nx2WaitStats::Site::SyncptWait};
     std::unique_lock lk(guard);
     wait_cv.wait(lk, pred);
 }

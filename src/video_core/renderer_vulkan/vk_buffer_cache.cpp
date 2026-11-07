@@ -472,6 +472,16 @@ void BufferCacheRuntime::WaitSubmittedTick(u64 tick) {
     master.Wait(tick);
 }
 
+bool BufferCacheRuntime::PollSubmittedTick(u64 tick) {
+    auto& master_semaphore = scheduler.GetMasterSemaphore();
+    master_semaphore.Refresh();
+    return master_semaphore.IsFree(tick);
+}
+
+bool BufferCacheRuntime::IsSubmittedTick(u64 tick) const {
+    return scheduler.IsSubmitted(tick);
+}
+
 void BufferCacheRuntime::Finish() {
     scheduler.Finish();
 }

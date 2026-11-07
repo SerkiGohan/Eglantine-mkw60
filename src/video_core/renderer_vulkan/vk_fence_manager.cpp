@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "common/logging.h"
+#include "common/nx2_wait_stats.h"
 #include "video_core/gpu_split.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_fence_manager.h"
@@ -26,6 +27,7 @@ void InnerFence::Queue() {
     // Get the current tick so we can wait for it
     wait_tick = scheduler.CurrentTick();
     if (!scheduler.DeferFlush()) {
+        Common::Nx2WaitStats::TagNextSubmit(Common::Nx2WaitStats::Site::SubmitFence);
         scheduler.Flush();
     }
 }

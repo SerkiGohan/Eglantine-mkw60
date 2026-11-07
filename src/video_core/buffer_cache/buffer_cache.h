@@ -14,6 +14,7 @@
 #include <vector>
 #include <fmt/ranges.h>
 
+#include "common/nx2_wait_stats.h"
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/buffer_cache/uniform_stream_reuse.h"
@@ -2030,7 +2031,30 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx
             writes = entry.copy_writes;
         }
         // Submitted with the work that wrote the page (Nx2CopyListPages's caller flushes).
-        runtime.WaitSubmittedTick(tick);
+        {
+            namespace Stats = Common::Nx2WaitStats;
+            const bool stats = Stats::Enabled();
+            const s64 wait_start = Stats::NowNs();
+            // Upstream defers submissions: only spin if the copy has already been submitted.
+            // Otherwise WaitSubmittedTick first requests the submission from the back thread.
+            if (Stats::ListSpinEnabled() && runtime.IsSubmittedTick(tick)) {
+                // Poll actively for up to 2 ms before going to sleep
+                while (!runtime.PollSubmittedTick(tick) && Stats::NowNs() - wait_start < 2'000'000) {
+                }
+            }
+            runtime.WaitSubmittedTick(tick);
+            if (stats) {
+                const s64 wait_end = Stats::NowNs();
+                Stats::AddDuration(Stats::Site::ListsGpuCopy, wait_end - wait_start);
+                const s64 submitted = Stats::SubmitTime(tick);
+                // Only count it if the entry matches this tick (not older than 1 s)
+                if (submitted > 0 && wait_end - submitted < 1'000'000'000) {
+                    Stats::AddDuration(Stats::Site::ListsSubmitDelay, submitted - wait_start);
+                    Stats::AddDuration(Stats::Site::ListsGpuExec,
+                                       wait_end - (std::max)(submitted, wait_start));
+                }
+            }
+        }
         std::scoped_lock lock{nx2_list_mutex};
         const auto it = nx2_list_pages.find(page);
         if (it == nx2_list_pages.end() || !current(it->second) || it->second.copy_tick != tick ||
