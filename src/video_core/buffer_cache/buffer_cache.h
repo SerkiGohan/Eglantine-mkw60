@@ -23,6 +23,7 @@
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_mutation_probe.h"
+#include "video_core/nx2_cb_hazard_probe.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/texture_cache/util.h"
 
@@ -611,6 +612,9 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
             return false;
         }
         ssbo_addr = holder + indirect_offset;
+    }
+    if (Nx2CbHazardProbe::Enabled()) [[unlikely]] {
+        Nx2CbHazardProbe::NoteRead(ssbo_addr, 16, Nx2CbHazardProbe::StoragePointer); // B1 probe
     }
     channel_state->storage_buffers[stage][ssbo_index] =
         StorageBufferBinding(ssbo_addr, cbuf_index, is_written,

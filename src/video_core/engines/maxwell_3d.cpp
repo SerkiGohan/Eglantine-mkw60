@@ -23,6 +23,7 @@
 #include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_cb_hazard_probe.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/texture.h"
 #ifdef ARCHITECTURE_x86_64
@@ -790,6 +791,14 @@ void Maxwell3D::ProcessCBMultiData(const u32* start_base, u32 amount) {
     const size_t write_size = std::min(copy_size, room / sizeof(u32) * sizeof(u32));
     if (write_size != 0) {
         const GPUVAddr address{buffer_address + regs.const_buffer.offset};
+        if (VideoCommon::Nx2CbHazardProbe::Enabled()) [[unlikely]] {
+            // B1 probe: does this rewrite memory a recent draw read?
+            static thread_local std::vector<u8> old_bytes;
+            old_bytes.resize(write_size);
+            memory_manager.ReadBlockUnsafe(address, old_bytes.data(), write_size);
+            const bool changed = std::memcmp(old_bytes.data(), start_base, write_size) != 0;
+            VideoCommon::Nx2CbHazardProbe::NoteWrite(address, write_size, changed);
+        }
         memory_manager.WriteBlockCached(address, start_base, write_size);
     }
     if (write_size != copy_size) {

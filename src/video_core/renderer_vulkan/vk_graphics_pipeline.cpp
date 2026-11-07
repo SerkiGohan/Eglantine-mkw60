@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <iostream>
 #include <span>
@@ -34,6 +35,7 @@
 #include "video_core/nx2_profile.h"
 #include "video_core/renderer_vulkan/nx2_draw_repeat_probe.h"
 #include "video_core/nx2_mutation_probe.h"
+#include "video_core/nx2_cb_hazard_probe.h"
 
 #if defined(__clang__) && defined(NDEBUG)
 #define LAMBDA_FORCEINLINE __attribute__((always_inline))
@@ -398,6 +400,27 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     const VideoCommon::Nx2MutationProbe::Counters mutation_before =
         VideoCommon::Nx2MutationProbe::t_counters;
     const s64 mutation_start = mutation_probe ? VideoCommon::Nx2MutationProbe::NowNs() : 0;
+    // B1 step 1: constant buffer hazard probe (nx2_cb_hazard_probe.h) - what this draw reads
+    namespace CbHazard = VideoCommon::Nx2CbHazardProbe;
+    const bool cb_hazard_probe = CbHazard::Enabled();
+    if (cb_hazard_probe) [[unlikely]] {
+        CbHazard::BeginDraw();
+        for (size_t stage = 0; stage < Spec::enabled_stages.size(); ++stage) {
+            if (!Spec::enabled_stages[stage]) {
+                continue;
+            }
+            const auto& stage_cbufs = maxwell3d->state.shader_stages[stage].const_buffers;
+            for (u32 mask = enabled_uniform_buffer_masks[stage]; mask != 0; mask &= mask - 1) {
+                const u32 index = static_cast<u32>(std::countr_zero(mask));
+                const auto& cb = stage_cbufs[index];
+                if (cb.enabled) {
+                    const u32 used = uniform_buffer_sizes[stage][index];
+                    CbHazard::NoteRead(cb.address, used != 0 ? (std::min)(cb.size, used) : cb.size,
+                                       CbHazard::Uniform);
+                }
+            }
+        }
+    }
     boost::container::small_vector<VideoCommon::ImageViewInOut, 160> views;
     boost::container::small_vector<VideoCommon::SamplerId, 96> samplers;
     views.reserve(num_image_elements);
@@ -450,12 +473,19 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                     const u32 second_offset{desc.secondary_cbuf_offset + index_offset};
                     const GPUVAddr separate_addr{cbufs[desc.secondary_cbuf_index].address +
                                                  second_offset};
+                    if (cb_hazard_probe) [[unlikely]] {
+                        CbHazard::NoteRead(addr, 4, CbHazard::Handle);
+                        CbHazard::NoteRead(separate_addr, 4, CbHazard::Handle);
+                    }
                     const u32 lhs_raw{gpu_memory->Read<u32>(addr) << desc.shift_left};
                     const u32 rhs_raw{gpu_memory->Read<u32>(separate_addr)
                                       << desc.secondary_shift_left};
                     const u32 raw{lhs_raw | rhs_raw};
                     return TexturePair(raw, via_header_index);
                 }
+            }
+            if (cb_hazard_probe) [[unlikely]] {
+                CbHazard::NoteRead(addr, 4, CbHazard::Handle);
             }
             return TexturePair(gpu_memory->Read<u32>(addr), via_header_index);
         }};
