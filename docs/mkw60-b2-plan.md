@@ -139,3 +139,14 @@ bindings, descriptors, commands, dirty mask, current pipeline, LRU log. Not cove
   - `DepthBiasGlobal` (50): `TouchDepthBias` checks with `||` – if `DepthBias` is set, `DepthBiasGlobal` stays set (short circuit). Rebuild for B3 or turn into a fixed rule.
 - **Image (user): completely normal** in menus and on Mario Bros. Circuit → piece 1 done.
 - Also found (not covered by the guard, for piece 4): own state in the `StateTracker` (topology, stencil values, `stencil_reset`) and `ShaderCache::last_shaders_valid`.
+
+## Result of step 3, piece 2: binding contexts of the buffer cache (7.11.2026, Mario Bros. Circuit, fork `7f70593b06`, log `~/mkw-perf/fork/b2-prep-contexts-mario.log`)
+
+- 2a (`d8013c2fd9`): graphics binding state as `GraphicsBindings` (access `BufferCache::Gfx()`), a pure refactoring.
+- 2b (`7f70593b06`): up to 4 contexts per channel; writes from outside the preparation go to all contexts (`ForEachGfx`:
+  binding/unbinding constant buffers, deleting buffers, compute resets uniform bindings, vertex buffers stale). A context that
+  takes over forgets its host uniform bindings and resolves index/vertex buffers again (dirty flags).
+- **Hardest test: `EDEN_NX2_PREP_CONTEXTS=2 EDEN_NX2_PREP_BLOCK=1`** (switch after **every** draw, ~80,000–93,000 switches/s in the race):
+  **image perfect** (user, menu + Mario Bros. Circuit), no errors in the log. Draws/s in the race as usual (~80,000–93,000).
+- Consequence for B3: the binding state of the buffer cache can be kept cleanly per preparer; rebuilding it on takeover
+  is cheap enough that even blocks of 1 go unnoticed.
