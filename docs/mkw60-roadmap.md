@@ -47,3 +47,4 @@ by register; pre-parse command lists in parallel; process channels separately wh
 | 7.11.2026 | B1 step 3 redirection | All register reads of the preparation go through `DrawRegs()`; test mode 4 (live = previous draw) looks exactly the same |
 | 7.11.2026 | B1 step 4 cost | Replica + redirection ~8 ms/s ≈ 1 % at the back (Mario Bros. Circuit, perf) → **B1 done** |
 | 7.11.2026 | B2 step 1 split | Mario Bros. Circuit: ~60 % of the draw time serial (uniform copy, flush work, image views, SynchronizeBuffer, handles), ~40 % parallelizable (~105 ms/s CPU by the perf ratio) → threshold just met, continue with B2; also make the serial parts cheaper |
+| 7.11.2026 | B2 step 2 guard | The parallel part only writes binding state (~35/draw), descriptors (~10), commands (~4.6), dirty clears (~5.7), pipeline (0.2), LRU (0.07); buffer creation ~5/s → everything can be kept per preparer, fallback for creation |

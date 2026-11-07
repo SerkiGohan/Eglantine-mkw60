@@ -108,3 +108,23 @@ limited (back ~13–20 % lighter). Besides that, **making serial parts cheaper**
 `flush work` ~48 ms/s per draw (FlushCaching/invalidation on every draw), `SynchronizeBuffer` ~36 ms/s (page check,
 almost never an upload), uniform copy ~65 ms/s. Open question: how much of the wall-clock difference to perf is blocking (lock in
 `Draw`, submission in `flush work`)?
+
+## Result of step 2 (7.11.2026 ~14:30, time trial on Mario Bros. Circuit, fork `0959967001`, `EDEN_NX2_CACHE_GUARD=1`, log `~/mkw-perf/fork/b2-cache-guard-mario.log`)
+
+Median over 13 lines in the race (~85,000 draws/s), writes per draw:
+
+| Place | serial | **parallel** | where (parallel) | Consequence for step 3 |
+|---|---|---|---|---|
+| buffer binding state (`channel_state`) | 0 | **34.5** | update buffers | own binding state per preparer |
+| descriptor queue | 6.7 | **9.7** | push descriptors 7.6, bind stage buffers 1.1, acquire 1 | own queue per preparer; uniform descriptors are created serially → staging reference in the snapshot, the preparer writes the entry |
+| scheduler record | 0.2 | **4.6** | update buffers 1.5, configure draw 1.2, dynamic state 0.8, draw record 1 | own command buffer per preparer (B3: secondary command buffers) |
+| dirty flags cleared | 0.2 | **5.7** | dynamic state 3.2, update buffers 2.3, pipeline lookup 0.2 | record the dirty mask serially per draw, preparers only read |
+| LRU touch | 0.68 | **0.07** | update buffers, bind stage buffers | touch log |
+| pipeline state (current pipeline) | 0 | **0.2** | pipeline lookup | current pipeline per preparer |
+| slot/LRU insert/erase | ~300/s | **~4–6/s** | update buffers (= creating buffers) | heavy draw → serial fallback |
+| staging requests, TIC/TSC cache, new image views/samplers, image changed, dirty set | | 0 | – | stay in the serial part, as planned |
+
+**Result:** the parallel part writes exactly the expected things, there was no surprise. Structural changes (creating buffers) happen
+in the parallel part only ~5 times per second → a serial fallback is enough. Everything else is state that can be kept per preparer:
+bindings, descriptors, commands, dirty mask, current pipeline, LRU log. Not covered by the guard: `PipelineCache::graphics_key`
+(refilled on every draw, a member) and `GraphicsPipeline::MarkUsed` – both also per preparer or logged.
