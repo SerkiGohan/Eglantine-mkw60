@@ -643,12 +643,14 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             }
             split_uniform_begin[stage] = static_cast<u32>(captured);
             buffer_cache.Nx2BindStageUniforms(stage);
-            captured = guest_descriptor_queue.EndCapture();
+            // EndCapture counts from the start of this stage's capture.
+            captured += guest_descriptor_queue.EndCapture();
             guest_descriptor_queue.BeginCapture(split_uniform_entries.data() + captured,
                                                 split_uniform_entries.size() - captured);
             split_uniform_end[stage] = static_cast<u32>(captured);
         }
         (void)guest_descriptor_queue.EndCapture();
+        ASSERT(captured <= split_uniform_entries.size());
         // Preparation from here: what it uploads or creates makes the draw "heavy".
         split_before = VideoCommon::Nx2MutationProbe::t_counters;
     }
