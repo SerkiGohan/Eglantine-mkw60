@@ -1794,6 +1794,18 @@ private:
         const auto composited = std::chrono::steady_clock::now();
         PaceToVblank(w[12]);
         const auto paced = std::chrono::steady_clock::now();
+        // nx2-waittrace: the three sections of the image output in the timeline (present thread)
+        {
+            using namespace Common::Nx2WaitStats;
+            const auto to_ns = [](std::chrono::steady_clock::time_point t) {
+                return static_cast<s64>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(t.time_since_epoch())
+                        .count());
+            };
+            Trace::Complete(Trace::Extra::PresentFence, to_ns(entered), to_ns(waited), m_presents);
+            Trace::Complete(Trace::Extra::PresentComposite, to_ns(waited), to_ns(composited));
+            Trace::Complete(Trace::Extra::PresentPace, to_ns(composited), to_ns(paced));
+        }
         // Where each frame's time goes on the present thread, averaged per 600 presents: the
         // game is blocked here while Eden's GPU thread catches up (fence) and composites.
         {

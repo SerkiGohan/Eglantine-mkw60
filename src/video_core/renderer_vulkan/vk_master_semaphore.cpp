@@ -9,6 +9,7 @@
 #include <ranges>
 #include "common/nx2_wait_stats.h"
 #include "common/settings.h"
+#include "common/thread.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -40,6 +41,12 @@ MasterSemaphore::MasterSemaphore(const Device& device_) : device(device_) {
         .flags = 0,
     };
     semaphore = device.GetLogical().CreateSemaphore(semaphore_ci);
+
+    // nx2-waittrace: only with EDEN_NX2_WAIT_STATS=1, sleeps outside a recording
+    if (Common::Nx2WaitStats::Enabled()) {
+        trace_thread =
+            std::jthread([this](std::stop_token stop_token) { TraceGpuThread(stop_token); });
+    }
 
     if (!Settings::values.renderer_debug) {
         return;
@@ -338,6 +345,35 @@ VkResult MasterSemaphore::SubmitQueueFence(vk::CommandBuffer& cmdbuf,
     }
 
     return result;
+}
+
+void MasterSemaphore::TraceGpuThread(std::stop_token token) {
+    Common::SetCurrentThreadName("GPUTrace");
+    using namespace Common::Nx2WaitStats;
+    u64 next = 0;
+    s64 last_done = 0;
+    while (!token.stop_requested()) {
+        if (!Trace::Active()) {
+            next = 0;
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+            continue;
+        }
+        if (next == 0) {
+            next = semaphore.GetCounter() + 1;
+            last_done = NowNs();
+        }
+        // Blocks until the graphics card finished tick `next` (at most 5 ms, then check again)
+        if (!semaphore.Wait(next, 5'000'000)) {
+            continue;
+        }
+        const s64 now = NowNs();
+        // The GPU works in order: tick N starts at the earliest when it was submitted
+        // and tick N-1 was done.
+        const s64 start = (std::max)(SubmitTime(next), last_done);
+        Trace::Complete(Trace::Extra::GpuTick, (std::min)(start, now), now, next);
+        last_done = now;
+        ++next;
+    }
 }
 
 void MasterSemaphore::WaitThread(std::stop_token token) {

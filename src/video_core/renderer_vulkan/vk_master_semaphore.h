@@ -68,6 +68,9 @@ private:
 
     void WaitThread(std::stop_token token);
 
+    /// nx2-waittrace: during a recording, notes when the graphics card finished each submission
+    void TraceGpuThread(std::stop_token token);
+
     vk::Fence GetFreeFence();
 
 private:
@@ -82,6 +85,7 @@ private:
     std::deque<vk::Fence> free_queue; ///< Holds available fences for submission.
     std::jthread debug_thread;        ///< Debug thread to workaround validation layer bugs.
     std::jthread wait_thread;         ///< Helper thread that waits for submitted fences.
+    std::jthread trace_thread;        ///< nx2-waittrace (last: ends before `semaphore`).
 };
 
 } // namespace Vulkan
