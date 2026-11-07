@@ -131,7 +131,7 @@ u64 ShaderCache::MeshStateHash() const {
 }
 
 bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
-    auto& dirty{maxwell3d->dirty.flags};
+    auto& dirty{maxwell3d->DrawDirty()};
     if (!dirty[VideoCommon::Dirty::Shaders]) {
         return last_shaders_valid;
     }

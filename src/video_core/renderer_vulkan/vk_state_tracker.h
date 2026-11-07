@@ -84,21 +84,21 @@ public:
     explicit StateTracker();
 
     void InvalidateCommandBufferState() {
-        (*flags) |= invalidation_flags;
+        (*DirtyFlags()) |= invalidation_flags;
         current_topology = INVALID_TOPOLOGY;
         stencil_reset = true;
     }
 
     void InvalidateViewports() {
-        (*flags)[Dirty::Viewports] = true;
+        (*DirtyFlags())[Dirty::Viewports] = true;
     }
 
     void InvalidateScissors() {
-        (*flags)[Dirty::Scissors] = true;
+        (*DirtyFlags())[Dirty::Scissors] = true;
     }
 
     void InvalidateStateEnableFlag() {
-        (*flags)[Dirty::StateEnable] = true;
+        (*DirtyFlags())[Dirty::StateEnable] = true;
     }
 
     bool TouchViewports() {
@@ -296,8 +296,8 @@ private:
     static constexpr auto INVALID_TOPOLOGY = static_cast<Maxwell::PrimitiveTopology>(~0u);
 
     bool Exchange(std::size_t id, bool new_value) const noexcept {
-        const bool is_dirty = (*flags)[id];
-        (*flags)[id] = new_value;
+        const bool is_dirty = (*DirtyFlags())[id];
+        (*DirtyFlags())[id] = new_value;
         return is_dirty;
     }
 
@@ -308,6 +308,11 @@ private:
     };
 
     Tegra::Engines::Maxwell3D::DirtyState::Flags* flags;
+    /// B2 step 3: while a draw is prepared with EDEN_NX2_DIRTY_SNAPSHOT=1, its copy of the flags.
+    Tegra::Engines::Maxwell3D::DirtyState::Flags* DirtyFlags() const noexcept {
+        auto* const draw = Tegra::Engines::Maxwell3D::t_draw_dirty;
+        return draw != nullptr ? draw : flags;
+    }
     Tegra::Engines::Maxwell3D::DirtyState::Flags default_flags;
     Tegra::Engines::Maxwell3D::DirtyState::Flags invalidation_flags;
     Maxwell::PrimitiveTopology current_topology = INVALID_TOPOLOGY;

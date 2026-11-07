@@ -327,6 +327,95 @@ u32 Maxwell3D::Nx2ReplicaMode() {
     return mode;
 }
 
+u32 Maxwell3D::Nx2DirtySnapshotMode() {
+    static const u32 mode = [] {
+        const char* value = std::getenv("EDEN_NX2_DIRTY_SNAPSHOT");
+        return value != nullptr && value[0] == '1' ? 1U : 0U;
+    }();
+    return mode;
+}
+
+void Maxwell3D::Nx2BeginDrawDirty() {
+    nx2_dirty_start = dirty.flags;
+    nx2_dirty_copy = dirty.flags;
+    t_draw_dirty = &nx2_dirty_copy;
+}
+
+namespace {
+struct Nx2DirtyStats {
+    u64 draws{};
+    u64 direct_draws{};                ///< draws that changed dirty.flags directly
+    std::array<u64, 256> direct{};     ///< per flag: changed directly
+    std::array<u64, 256> cleared{};    ///< per flag: set at the start, cleared by the draw
+    std::array<u64, 256> left_set{};   ///< per flag: set at the start, still set at the end
+    std::array<u64, 256> set{};        ///< per flag: set by the draw
+    s64 last_report{};
+};
+} // namespace
+
+void Maxwell3D::Nx2EndDrawDirty() {
+    t_draw_dirty = nullptr;
+    static Nx2DirtyStats stats;
+    const DirtyState::Flags& start = nx2_dirty_start;
+    const DirtyState::Flags& copy = nx2_dirty_copy;
+    const DirtyState::Flags direct = dirty.flags ^ start;
+    const DirtyState::Flags cleared = start & ~copy;
+    const DirtyState::Flags set = copy & ~start;
+    dirty.flags = (dirty.flags & ~cleared) | set;
+
+    ++stats.draws;
+    if (direct.any()) [[unlikely]] {
+        ++stats.direct_draws;
+    }
+    const DirtyState::Flags left_set = start & copy;
+    for (size_t i = 0; i < 256; ++i) {
+        stats.direct[i] += direct[i] ? 1 : 0;
+        stats.cleared[i] += cleared[i] ? 1 : 0;
+        stats.left_set[i] += left_set[i] ? 1 : 0;
+        stats.set[i] += set[i] ? 1 : 0;
+    }
+    if ((stats.draws & 1023) != 0) {
+        return;
+    }
+    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    if (stats.last_report == 0) {
+        stats.last_report = now;
+        return;
+    }
+    if (now - stats.last_report < 10'000'000'000LL) {
+        return;
+    }
+    const double seconds = static_cast<double>(now - stats.last_report) / 1e9;
+    std::string direct_text, consumed_text;
+    u64 cleared_total{}, set_total{};
+    for (size_t i = 0; i < 256; ++i) {
+        cleared_total += stats.cleared[i];
+        set_total += stats.set[i];
+        if (stats.direct[i] != 0) {
+            direct_text += fmt::format(" {}:{:.0f}/s", i, static_cast<double>(stats.direct[i]) / seconds);
+        }
+        // Flags a draw sometimes consumes and sometimes leaves set (conditional consumers).
+        if (stats.cleared[i] != 0 && stats.left_set[i] != 0) {
+            consumed_text += fmt::format(" {}: cleared {:.0f}/s, left set {:.0f}/s;", i,
+                                         static_cast<double>(stats.cleared[i]) / seconds,
+                                         static_cast<double>(stats.left_set[i]) / seconds);
+        }
+    }
+    LOG_INFO(HW_GPU,
+             "Dirty snapshot: Draws {:.0f}/s | draws with a direct change {:.0f}/s (flags:{}) | "
+             "cleared {:.2f}/draw, set {:.2f}/draw | partly left set:{}",
+             static_cast<double>(stats.draws) / seconds,
+             static_cast<double>(stats.direct_draws) / seconds,
+             direct_text.empty() ? " none" : direct_text,
+             static_cast<double>(cleared_total) / static_cast<double>(stats.draws),
+             static_cast<double>(set_total) / static_cast<double>(stats.draws),
+             consumed_text.empty() ? " none" : consumed_text);
+    stats = {};
+    stats.last_report = now;
+}
+
 void Maxwell3D::Nx2SyncReplica() {
     struct Stats {
         u64 draws{}, changed{}, mismatch_draws{}, mismatch_regs{};

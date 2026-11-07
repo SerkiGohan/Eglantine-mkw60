@@ -1063,7 +1063,7 @@ template <class P>
 void BufferCache<P>::RefreshRepackedVertexBuffers() {
     if constexpr (requires { runtime.IsVertexRepacked(u32{}); }) {
         u32 mask = std::exchange(stale_vertex_buffers_mask, 0) & enabled_vertex_buffers_mask;
-        auto& flags = maxwell3d->dirty.flags;
+        auto& flags = maxwell3d->DrawDirty();
         while (mask != 0) {
             const u32 index = std::countr_zero(mask);
             mask &= mask - 1;
@@ -1085,7 +1085,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
 #endif
 
     if (use_optimized_vertex_buffers) {
-        auto& flags = maxwell3d->dirty.flags;
+        auto& flags = maxwell3d->DrawDirty();
         u32 enabled_mask = enabled_vertex_buffers_mask;
         HostBindings<Buffer> bindings{};
         u32 last_index = (std::numeric_limits<u32>::max)();
@@ -1129,7 +1129,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
     } else {
         HostBindings<typename P::Buffer> host_bindings;
         bool any_valid{false};
-        auto& flags = maxwell3d->dirty.flags;
+        auto& flags = maxwell3d->DrawDirty();
         for (u32 index = 0; index < NUM_VERTEX_BUFFERS; ++index) {
             const Binding& binding = channel_state->vertex_buffers[index];
             Buffer& buffer = slot_buffers[binding.buffer_id];
@@ -1659,7 +1659,7 @@ void BufferCache<P>::UpdateIndexBuffer() {
     // The index count is currently changed without updating the dirty flags
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     const auto& index_buffer_ref = draw_state.index_buffer;
-    auto& flags = maxwell3d->dirty.flags;
+    auto& flags = maxwell3d->DrawDirty();
     if (!flags[Dirty::IndexBuffer]) {
         return;
     }
@@ -1701,8 +1701,8 @@ void BufferCache<P>::UpdateIndexBuffer() {
 
 template <class P>
 void BufferCache<P>::UpdateVertexBuffers() {
-    auto& flags = maxwell3d->dirty.flags;
-    if (!maxwell3d->dirty.flags[Dirty::VertexBuffers]) {
+    auto& flags = maxwell3d->DrawDirty();
+    if (!maxwell3d->DrawDirty()[Dirty::VertexBuffers]) {
         return;
     }
     flags[Dirty::VertexBuffers] = false;
@@ -1715,7 +1715,7 @@ void BufferCache<P>::UpdateVertexBuffers() {
 template <class P>
 void BufferCache<P>::UpdateVertexBuffer(u32 index) {
     Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::BindingState); // B2 cache guard
-    if (!maxwell3d->dirty.flags[Dirty::VertexBuffer0 + index]) {
+    if (!maxwell3d->DrawDirty()[Dirty::VertexBuffer0 + index]) {
         return;
     }
     const auto& array = maxwell3d->DrawRegs().vertex_streams[index];
@@ -2681,7 +2681,7 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
         channel_state->uniform_buffer_binding_sizes.fill({});
     }
 
-    auto& flags = maxwell3d->dirty.flags;
+    auto& flags = maxwell3d->DrawDirty();
     if (dirty_index) {
         flags[Dirty::IndexBuffer] = true;
     }

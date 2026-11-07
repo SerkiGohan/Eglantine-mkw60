@@ -646,7 +646,7 @@ void TextureCache<P>::SynchronizeDescriptors(bool compute) {
 
 template <class P>
 bool TextureCache<P>::RescaleRenderTargets() {
-    auto& flags = maxwell3d->dirty.flags;
+    auto& flags = maxwell3d->DrawDirty();
     u32 scale_rating = 0;
     bool rescaled = false;
     std::array<ImageId, NUM_RT> tmp_color_images{};
@@ -750,7 +750,7 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
         }
     } clearing_scope{clearing_render_targets};
     clearing_render_targets = is_clear;
-    auto& flags = maxwell3d->dirty.flags;
+    auto& flags = maxwell3d->DrawDirty();
     if (!flags[Dirty::RenderTargets]) {
         for (size_t index = 0; index < NUM_RT; ++index) {
             ImageViewId& color_buffer_id = render_targets.color_buffer_ids[index];
@@ -2184,7 +2184,7 @@ void TextureCache<P>::InvalidateScale(Image& image) {
         image.scale_tick = frame_tick + 1;
     }
     const std::span<const ImageViewId> image_view_ids = image.image_view_ids;
-    auto& dirty = maxwell3d->dirty.flags;
+    auto& dirty = maxwell3d->DrawDirty();
     dirty[Dirty::RenderTargets] = true;
     dirty[Dirty::ZetaBuffer] = true;
     for (size_t rt = 0; rt < NUM_RT; ++rt) {
@@ -3421,7 +3421,7 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     ASSERT_MSG(False(image.flags & ImageFlagBits::Registered), "Image was not unregistered");
 
     // Mark render targets as dirty
-    auto& dirty = maxwell3d->dirty.flags;
+    auto& dirty = maxwell3d->DrawDirty();
     dirty[Dirty::RenderTargets] = true;
     dirty[Dirty::ZetaBuffer] = true;
     for (size_t rt = 0; rt < NUM_RT; ++rt) {

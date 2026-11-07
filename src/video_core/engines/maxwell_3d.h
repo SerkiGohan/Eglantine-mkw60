@@ -3256,6 +3256,44 @@ public:
         Tables tables{};
     } dirty;
 
+    // B2 step 3, piece 1 (fork mkw60, EDEN_NX2_DIRTY_SNAPSHOT=1): while a draw is prepared, the
+    // preparation reads and clears a copy of the dirty flags (DrawDirty) instead of the shared
+    // ones; at the end of the draw the flags it cleared or set are applied to the shared flags.
+    // Behaviour stays the same on one thread; a flag the draw changes directly in `dirty.flags`
+    // (a site not using DrawDirty) is counted and logged ("Dirty snapshot", every 10 s).
+    static u32 Nx2DirtySnapshotMode();
+    static inline thread_local DirtyState::Flags* t_draw_dirty{};
+    [[nodiscard]] DirtyState::Flags& DrawDirty() {
+        return t_draw_dirty != nullptr ? *t_draw_dirty : dirty.flags;
+    }
+    void Nx2BeginDrawDirty();
+    void Nx2EndDrawDirty();
+    DirtyState::Flags nx2_dirty_start;
+    DirtyState::Flags nx2_dirty_copy;
+
+    /// RAII for RasterizerVulkan::Draw/DrawIndirect (nothing when off or already inside a draw).
+    class Nx2DrawDirtyScope {
+    public:
+        explicit Nx2DrawDirtyScope(Maxwell3D& maxwell3d_)
+            : maxwell3d{maxwell3d_},
+              active{Nx2DirtySnapshotMode() != 0 && t_draw_dirty == nullptr} {
+            if (active) [[unlikely]] {
+                maxwell3d.Nx2BeginDrawDirty();
+            }
+        }
+        ~Nx2DrawDirtyScope() {
+            if (active) [[unlikely]] {
+                maxwell3d.Nx2EndDrawDirty();
+            }
+        }
+        Nx2DrawDirtyScope(const Nx2DrawDirtyScope&) = delete;
+        Nx2DrawDirtyScope& operator=(const Nx2DrawDirtyScope&) = delete;
+
+    private:
+        Maxwell3D& maxwell3d;
+        bool active;
+    };
+
     DrawManager draw_manager;
 
     GPUVAddr GetMacroAddress(size_t index) const {

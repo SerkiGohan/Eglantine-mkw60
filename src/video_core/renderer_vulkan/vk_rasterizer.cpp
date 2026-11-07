@@ -533,7 +533,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     const u32 repack_dirty = buffer_cache_runtime.SetVertexRepackLayout(
         maxwell3d->DrawRegs(), pipeline->HasDynamicVertexInput());
     if (repack_dirty) {
-        auto& flags = maxwell3d->dirty.flags;
+        auto& flags = maxwell3d->DrawDirty();
         flags[VideoCommon::Dirty::VertexBuffers] = true;
         flags[Dirty::VertexInput] = true;
         for (u32 binding = 0; binding < 32; ++binding) {
@@ -726,7 +726,9 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
 
 void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
-    Common::Nx2CacheGuard::SetDirtyFlags(&maxwell3d->dirty.flags); // B2 cache guard
+    // B2 step 3: with EDEN_NX2_DIRTY_SNAPSHOT=1 the draw works on a copy of the dirty flags.
+    Tegra::Engines::Maxwell3D::Nx2DrawDirtyScope dirty_scope{*maxwell3d};
+    Common::Nx2CacheGuard::SetDirtyFlags(&maxwell3d->DrawDirty()); // B2 cache guard
     if (Tegra::Engines::Maxwell3D::Nx2ReplicaMode() != 0) [[unlikely]] {
         maxwell3d->Nx2SyncReplica(); // B1 step 2: register replica
     }
@@ -939,7 +941,9 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
 
 void RasterizerVulkan::DrawIndirect() {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
-    Common::Nx2CacheGuard::SetDirtyFlags(&maxwell3d->dirty.flags); // B2 cache guard
+    // B2 step 3: with EDEN_NX2_DIRTY_SNAPSHOT=1 the draw works on a copy of the dirty flags.
+    Tegra::Engines::Maxwell3D::Nx2DrawDirtyScope dirty_scope{*maxwell3d};
+    Common::Nx2CacheGuard::SetDirtyFlags(&maxwell3d->DrawDirty()); // B2 cache guard
     const auto& params = maxwell3d->draw_manager.indirect_state;
     if (VideoCommon::Nx2Diag::Active()) {
         g_diag_draw = {"indirect", static_cast<u32>(params.max_draw_counts), 0};
@@ -2110,7 +2114,7 @@ void RasterizerVulkan::UpdateDynamicStates() {
     // which clears logic_op.enable in place (in the replica with EDEN_NX2_DRAW_REPLICA=3); a
     // multi-threaded preparer must keep that per thread instead.
     auto& regs = const_cast<Tegra::Engines::Maxwell3D::Regs&>(maxwell3d->DrawRegs());
-    auto& flags = maxwell3d->dirty.flags;
+    auto& flags = maxwell3d->DrawDirty();
     const auto topology = maxwell3d->draw_manager.draw_state.topology;
     const bool topology_changed = state_tracker.ChangePrimitiveTopology(topology);
     if (topology_changed) {
@@ -2226,7 +2230,7 @@ void RasterizerVulkan::UpdateViewportsState(Tegra::Engines::Maxwell3D::Regs& reg
         return;
     }
 
-    maxwell3d->dirty.flags[Dirty::Scissors] = true;
+    maxwell3d->DrawDirty()[Dirty::Scissors] = true;
 
     if (!regs.viewport_scale_offset_enabled) {
         float x = static_cast<float>(regs.surface_clip.x);
@@ -2928,7 +2932,7 @@ void RasterizerVulkan::UpdateStencilTestEnable(Tegra::Engines::Maxwell3D::Regs& 
 }
 
 void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs) {
-    auto& dirty{maxwell3d->dirty.flags};
+    auto& dirty{maxwell3d->DrawDirty()};
     const bool vertex_input_dirty = dirty[Dirty::VertexInput];
     const bool vertex_buffers_dirty = dirty[VideoCommon::Dirty::VertexBuffers];
     if (!vertex_input_dirty && !vertex_buffers_dirty) {
