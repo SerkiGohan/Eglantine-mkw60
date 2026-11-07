@@ -725,6 +725,9 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
 
 void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
+    if (Tegra::Engines::Maxwell3D::Nx2ReplicaMode() != 0) [[unlikely]] {
+        maxwell3d->Nx2SyncReplica(); // B1 step 2: register replica
+    }
     {
         // A draw's first and count can come from memory a skipped (rejected) compute program
         // should have written. Past 16M vertices they are garbage: building the quad index

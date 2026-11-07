@@ -5,6 +5,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <string>
+#include <chrono>
+#include <vector>
+#include <unordered_map>
+#include <bit>
 #include <array>
 #include <atomic>
 #include <cstring>
@@ -314,6 +319,74 @@ u32 Maxwell3D::ProcessShadowRam(u32 method, u32 argument) {
     return argument;
 }
 
+u32 Maxwell3D::Nx2ReplicaMode() {
+    static const u32 mode = [] {
+        const char* value = std::getenv("EDEN_NX2_DRAW_REPLICA");
+        return value != nullptr && value[0] >= '1' && value[0] <= '2' ? static_cast<u32>(value[0] - '0') : 0U;
+    }();
+    return mode;
+}
+
+void Maxwell3D::Nx2SyncReplica() {
+    struct Stats {
+        u64 draws{}, changed{}, mismatch_draws{}, mismatch_regs{};
+        std::unordered_map<u32, u64> missed; ///< register index -> times it differed
+        std::chrono::steady_clock::time_point last{};
+    };
+    static thread_local Stats stats;
+    if (!nx2_replica) {
+        nx2_replica = std::make_unique<Regs>(regs);
+        nx2_changed.fill(0);
+        return;
+    }
+    u64 changed = 0;
+    for (size_t word = 0; word < nx2_changed.size(); ++word) {
+        for (u64 bits = std::exchange(nx2_changed[word], u64{0}); bits != 0; bits &= bits - 1) {
+            const size_t index = word * 64 + static_cast<size_t>(std::countr_zero(bits));
+            nx2_replica->reg_array[index] = regs.reg_array[index];
+            ++changed;
+        }
+    }
+    ++stats.draws;
+    stats.changed += changed;
+    if (Nx2ReplicaMode() == 2) {
+        bool mismatch = false;
+        for (size_t index = 0; index < Regs::NUM_REGS; ++index) {
+            if (nx2_replica->reg_array[index] != regs.reg_array[index]) {
+                mismatch = true;
+                ++stats.mismatch_regs;
+                ++stats.missed[static_cast<u32>(index)];
+                nx2_replica->reg_array[index] = regs.reg_array[index];
+            }
+        }
+        stats.mismatch_draws += mismatch ? 1 : 0;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (stats.last.time_since_epoch().count() == 0) {
+        stats.last = now;
+        return;
+    }
+    const double seconds = std::chrono::duration<double>(now - stats.last).count();
+    if (seconds < 10.0) {
+        return;
+    }
+    stats.last = now;
+    std::vector<std::pair<u32, u64>> top(stats.missed.begin(), stats.missed.end());
+    std::ranges::sort(top, [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::string text;
+    for (size_t i = 0; i < top.size() && i < 16; ++i) {
+        text += fmt::format(" {:#x}(Byte {:#x})x{}", top[i].first, top[i].first * 4, top[i].second);
+    }
+    LOG_INFO(HW_GPU,
+             "Draw replica: mode {} | Draws {:.0f}/s, tracked registers {:.1f}/draw | draws with "
+             "mismatch {:.0f}/s ({:.0f} registers/s) | missed registers (since start):{}",
+             Nx2ReplicaMode(), static_cast<double>(stats.draws) / seconds,
+             stats.draws ? static_cast<double>(stats.changed) / static_cast<double>(stats.draws) : 0.0,
+             static_cast<double>(stats.mismatch_draws) / seconds,
+             static_cast<double>(stats.mismatch_regs) / seconds, text);
+    stats.draws = stats.changed = stats.mismatch_draws = stats.mismatch_regs = 0;
+}
+
 void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
     VideoCommon::Nx2Profile::Scope sink_zone{VideoCommon::Nx2Profile::Zone::ConsumeSink};
     const auto control = shadow_state.shadow_ram_control;
@@ -348,6 +421,9 @@ void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
         draw_manager.DrawDeferred(*this, true);
     }
     regs.reg_array[method] = argument;
+    if (Nx2ReplicaMode() != 0) [[unlikely]] {
+        Nx2MarkChanged(method); // B1 step 2
+    }
     for (auto const& table : dirty.tables)
         dirty.flags[table[method]] = true;
 }

@@ -3210,6 +3210,18 @@ public:
     void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
                               const u32* base_start, u32 amount, u32 methods_pending);
 
+    /// B1 step 2 (EDEN_NX2_DRAW_REPLICA, nx2 fork mkw60): a second register set kept up to date
+    /// only through the registers written since the last draw. 1 keeps it, 2 also compares it with
+    /// the real one before every draw and logs the registers it missed.
+    static u32 Nx2ReplicaMode();
+    void Nx2MarkChanged(u32 method) {
+        nx2_changed[method >> 6] |= u64{1} << (method & 63);
+    }
+    /// Called before each draw on the thread that owns the registers.
+    void Nx2SyncReplica();
+    std::array<u64, Regs::NUM_REGS / 64> nx2_changed{};
+    std::unique_ptr<Regs> nx2_replica;
+
     bool ShouldExecute() const {
         return execute_on;
     }
