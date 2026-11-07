@@ -630,13 +630,13 @@ void TextureCache<P>::SynchronizeDescriptors(bool compute) {
             ++texture_bindings_serial;
         }
     } else {
-        const bool linked_tsc = maxwell3d->regs.sampler_binding == Tegra::Engines::Maxwell3D::Regs::SamplerBinding::ViaHeaderBinding;
-        const u32 tic_limit = maxwell3d->regs.tex_header.limit;
-        const u32 tsc_limit = linked_tsc ? tic_limit : maxwell3d->regs.tex_sampler.limit;
+        const bool linked_tsc = maxwell3d->DrawRegs().sampler_binding == Tegra::Engines::Maxwell3D::Regs::SamplerBinding::ViaHeaderBinding;
+        const u32 tic_limit = maxwell3d->DrawRegs().tex_header.limit;
+        const u32 tsc_limit = linked_tsc ? tic_limit : maxwell3d->DrawRegs().tex_sampler.limit;
         bool bindings_changed = false;
-        if (channel_state->graphics_sampler_table.Synchronize(maxwell3d->regs.tex_sampler.Address(), tsc_limit))
+        if (channel_state->graphics_sampler_table.Synchronize(maxwell3d->DrawRegs().tex_sampler.Address(), tsc_limit))
             bindings_changed = true;
-        if (channel_state->graphics_image_table.Synchronize(maxwell3d->regs.tex_header.Address(), tic_limit))
+        if (channel_state->graphics_image_table.Synchronize(maxwell3d->DrawRegs().tex_header.Address(), tic_limit))
             bindings_changed = true;
         if (bindings_changed) {
             ++texture_bindings_serial;
@@ -793,7 +793,7 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
     }
 
     for (size_t index = 0; index < NUM_RT; ++index) {
-        render_targets.draw_buffers[index] = static_cast<u8>(maxwell3d->regs.rt_control.Map(index));
+        render_targets.draw_buffers[index] = static_cast<u8>(maxwell3d->DrawRegs().rt_control.Map(index));
     }
     u32 up_scale = 1;
     u32 down_shift = 0;
@@ -802,8 +802,8 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
         down_shift = Settings::values.resolution_info.down_shift;
     }
     render_targets.size = Extent2D{
-        (maxwell3d->regs.surface_clip.width * up_scale) >> down_shift,
-        (maxwell3d->regs.surface_clip.height * up_scale) >> down_shift,
+        (maxwell3d->DrawRegs().surface_clip.width * up_scale) >> down_shift,
+        (maxwell3d->DrawRegs().surface_clip.height * up_scale) >> down_shift,
     };
     render_targets.is_rescaled = is_rescaling;
 
@@ -2656,7 +2656,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             new_info.resources.layers != 1 || new_info.num_samples != 1) {
             return false;
         }
-        const auto& regs = maxwell3d->regs;
+        const auto& regs = maxwell3d->DrawRegs();
         const auto& surface = regs.clear_surface;
         if (surface.layer != 0) {
             return false;
@@ -2960,7 +2960,7 @@ SamplerId TextureCache<P>::FindSampler(const TSCEntry& config, bool compute) {
 
 template <class P>
 ImageViewId TextureCache<P>::FindColorBuffer(size_t index) {
-    const auto& regs = maxwell3d->regs;
+    const auto& regs = maxwell3d->DrawRegs();
     if (index >= regs.rt_control.count) {
         return ImageViewId{};
     }
@@ -2978,7 +2978,7 @@ ImageViewId TextureCache<P>::FindColorBuffer(size_t index) {
 
 template <class P>
 ImageViewId TextureCache<P>::FindDepthBuffer() {
-    const auto& regs = maxwell3d->regs;
+    const auto& regs = maxwell3d->DrawRegs();
     if (!regs.zeta_enable) {
         return ImageViewId{};
     }

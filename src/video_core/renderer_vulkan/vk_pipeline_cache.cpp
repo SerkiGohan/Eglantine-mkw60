@@ -731,7 +731,7 @@ bool PipelineCache::IsIndirectResetShader() const {
     constexpr size_t vertex_b = static_cast<size_t>(Maxwell::ShaderType::VertexB);
     constexpr u64 reset_key = 0x72fd62555e7196cdULL;
     const auto* info = shader_infos[vertex_b];
-    return maxwell3d->regs.IsShaderConfigEnabled(vertex_b) && info && info->lowered_native &&
+    return maxwell3d->DrawRegs().IsShaderConfigEnabled(vertex_b) && info && info->lowered_native &&
            info->lowered_native->source_size == 128 + 11 * 16 &&
            info->lowered_native->diagnostic_key == reset_key;
 }
@@ -1243,7 +1243,7 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     }
     // If something is using depth, we can assume that games are not rendering anything which
     // will be used one time.
-    if (maxwell3d->regs.zeta_enable) {
+    if (maxwell3d->DrawRegs().zeta_enable) {
         graphics_miss = "async-build";
         return nullptr;
     }
