@@ -684,17 +684,17 @@ void Scheduler::Nx2EnterBlock(u32 max_draws) {
         nx2_block_context = std::make_unique<Nx2Context>();
     }
     ++g_nx2_block_stats.draws;
-    if (nx2_paused_block && nx2_block_draws < max_draws) {
+    if (t_nx2_paused_block && t_nx2_block_draws < max_draws) {
         // Continue the paused block with its own state.
         Nx2SaveContext(*nx2_main_context);
         Nx2LoadContext(*nx2_block_context);
-        t_nx2_block_owner = std::move(nx2_paused_block);
+        t_nx2_block_owner = std::move(t_nx2_paused_block);
         t_nx2_block = t_nx2_block_owner.get();
-        ++nx2_block_draws;
+        ++t_nx2_block_draws;
         return;
     }
     Nx2CompletePaused();
-    nx2_block_max = max_draws;
+    t_nx2_block_max = max_draws;
     Nx2BeginNewBlock();
 }
 
@@ -719,7 +719,7 @@ void Scheduler::Nx2BeginNewBlock() {
     t_nx2_block_owner = std::move(block);
     t_nx2_block = t_nx2_block_owner.get();
     InvalidateState();
-    nx2_block_draws = 1;
+    t_nx2_block_draws = 1;
 }
 
 void Scheduler::Nx2PauseBlock() {
@@ -729,18 +729,18 @@ void Scheduler::Nx2PauseBlock() {
     Nx2SaveContext(*nx2_block_context);
     Nx2LoadContext(*nx2_main_context);
     nx2_main_stale = true; // the GPU now has the block's state
-    nx2_paused_block = std::move(t_nx2_block_owner);
+    t_nx2_paused_block = std::move(t_nx2_block_owner);
     t_nx2_block = nullptr;
-    if (nx2_block_draws >= nx2_block_max) {
+    if (t_nx2_block_draws >= t_nx2_block_max) {
         Nx2CompletePaused();
     }
 }
 
 void Scheduler::Nx2CompletePaused() {
-    if (!nx2_paused_block) {
+    if (!t_nx2_paused_block) {
         return;
     }
-    const auto block = std::move(nx2_paused_block);
+    const auto block = std::move(t_nx2_paused_block);
     block->done.store(true, std::memory_order_release);
     block->done.notify_all();
     ++g_nx2_block_stats.blocks;

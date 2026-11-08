@@ -172,7 +172,7 @@ public:
             Nx2RecordInBlock(command); // P3 S3: into the open block
             return;
         }
-        if (nx2_paused_block) [[unlikely]] {
+        if (t_nx2_paused_block) [[unlikely]] {
             Nx2CompletePaused(); // anything in the main stream ends the paused block
         }
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::SchedulerRecord); // B2 cache guard
@@ -397,9 +397,11 @@ private:
     void Nx2LoadContext(const Nx2Context& context);
     std::unique_ptr<Nx2Context> nx2_main_context;  ///< main stream state while a block records
     std::unique_ptr<Nx2Context> nx2_block_context; ///< block state while it is paused
-    std::shared_ptr<Nx2Block> nx2_paused_block;
-    u32 nx2_block_draws{};
-    u32 nx2_block_max{};
+    /// The paused block and its draw count belong to the thread that records it (the back
+    /// thread): other threads (present: Wait with may_flush = false) must not complete it.
+    static inline thread_local std::shared_ptr<Nx2Block> t_nx2_paused_block;
+    static inline thread_local u32 t_nx2_block_draws{};
+    static inline thread_local u32 t_nx2_block_max{};
     bool nx2_main_stale{};
     /// Before waiting for the worker or submitting: completes an open block early. What this
     /// thread records afterwards goes to the main stream, behind the placeholder, so the order
