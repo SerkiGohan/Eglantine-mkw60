@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "common/common_types.h"
+#include "common/nx2_probes.h"
 
 namespace Common::Nx2CacheGuard {
 
@@ -44,10 +45,14 @@ inline constexpr std::array<const char*, NumSites> site_names{
 inline constexpr u32 NoZone = ~0U;
 inline constexpr u32 MaxZones = 64;
 
+#if MKW60_PROBES
 inline const bool g_enabled = [] {
     const char* value = std::getenv("EDEN_NX2_CACHE_GUARD");
     return value != nullptr && value[0] == '1';
 }();
+#else
+inline constexpr bool g_enabled = false; // probes not compiled in (common/nx2_probes.h)
+#endif
 
 struct Data {
     std::array<std::array<u64, MaxZones>, NumSites> counts{};

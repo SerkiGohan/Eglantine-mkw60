@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <fmt/format.h>
 #include "common/common_types.h"
+#include "common/nx2_probes.h"
 #include "common/logging.h"
 #if defined(__x86_64__) || defined(_M_X64)
 #include <x86intrin.h>
@@ -62,6 +63,9 @@ inline u32 Opt() {
 inline thread_local bool t_in_draw_flush = false;
 
 inline bool Enabled() {
+    if constexpr (!Common::kNx2Probes) {
+        return false; // probes not compiled in (common/nx2_probes.h)
+    }
     static const bool enabled = [] {
         const char* value = std::getenv("EDEN_NX2_FLUSH_PROBE");
         return value != nullptr && value[0] == '1';

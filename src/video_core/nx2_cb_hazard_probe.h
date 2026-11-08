@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <fmt/format.h>
 #include "common/common_types.h"
+#include "common/nx2_probes.h"
 #include "common/logging.h"
 
 namespace VideoCommon::Nx2CbHazardProbe {
@@ -25,6 +26,9 @@ inline constexpr u32 NumBuckets = 4;
 inline constexpr const char* bucket_names[NumBuckets] = {"1", "2-8", "9-32", "33-128"};
 
 inline bool Enabled() {
+    if constexpr (!Common::kNx2Probes) {
+        return false; // probes not compiled in (common/nx2_probes.h)
+    }
     static const bool enabled = [] {
         const char* value = std::getenv("EDEN_NX2_CB_HAZARD_PROBE");
         return value != nullptr && value[0] == '1';

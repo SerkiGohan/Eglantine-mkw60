@@ -25,12 +25,17 @@
 
 namespace VideoCommon::Nx2PrepCost {
 
+#if MKW60_PROBES
 inline const bool g_timing = [] {
     const char* value = std::getenv("EDEN_NX2_PREP_COST_PROBE");
     return value != nullptr && value[0] == '1';
 }();
 /// Zone tracking runs for the timing and for the cache guard (B2 step 2).
 inline const bool g_enabled = g_timing || Common::Nx2CacheGuard::g_enabled;
+#else
+inline constexpr bool g_timing = false; // probes not compiled in (common/nx2_probes.h)
+inline constexpr bool g_enabled = false;
+#endif
 
 inline constexpr u32 None = ~0U;
 inline constexpr u32 MaxZones = 64;

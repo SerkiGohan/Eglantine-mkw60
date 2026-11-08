@@ -18,6 +18,7 @@
 #include <x86intrin.h>
 #endif
 #include "common/common_types.h"
+#include "common/nx2_probes.h"
 #include "common/logging.h"
 
 namespace VideoCommon {
@@ -148,6 +149,9 @@ struct UboProbe {
 };
 
 [[nodiscard]] inline bool UboProbeEnabled() noexcept {
+    if constexpr (!Common::kNx2Probes) {
+        return false; // probes not compiled in (common/nx2_probes.h)
+    }
     static const bool enabled = [] {
         const char* const value = std::getenv("EDEN_NX2_UBO_PROBE");
         return value != nullptr && value[0] == '1';

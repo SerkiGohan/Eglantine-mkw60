@@ -82,6 +82,13 @@ cmake_dependent_option(YUZU_USE_BUNDLED_QT "Download bundled Qt binaries" "${MSV
 option(ENABLE_DEBUG_TOOLS "Enable debugging tools (maxwell disassembler, SPIRV translator, etc)" OFF)
 option(ENABLE_WERROR "Enable -Werror diagnostics" ON)
 
+# Fork mkw60: measurement probes (CB hazard, prep cost, cache guard, flush, UBO, mutation; see
+# src/common/nx2_probes.h). Off by default so they cost nothing in the hot paths.
+option(MKW60_PROBES "Fork mkw60: compile in the measurement probes" OFF)
+if (MKW60_PROBES)
+    add_compile_definitions(MKW60_PROBES=1)
+endif()
+
 # Handle specific -Werror downgrades safely across platforms
 if(ENABLE_WERROR)
     if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")

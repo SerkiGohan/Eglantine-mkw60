@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdlib>
 #include "common/common_types.h"
+#include "common/nx2_probes.h"
 #include "common/logging.h"
 #include <string>
 #include <fmt/format.h>
@@ -16,6 +17,9 @@
 namespace VideoCommon::Nx2MutationProbe {
 
 inline bool Enabled() {
+    if constexpr (!Common::kNx2Probes) {
+        return false; // probes not compiled in (common/nx2_probes.h)
+    }
     static const bool enabled = [] {
         const char* value = std::getenv("EDEN_NX2_MUTATION_PROBE");
         return value != nullptr && value[0] == '1';
