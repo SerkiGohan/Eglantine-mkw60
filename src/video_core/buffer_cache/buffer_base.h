@@ -129,12 +129,6 @@ public:
         write_tick = write_tick_;
     }
 
-    /// Fork mkw60 (sync skip): the range last synchronized with nothing CPU-modified left in it,
-    /// and the CPU epoch of its tracker manager then.
-    DAddr nx2_sync_begin{};
-    DAddr nx2_sync_end{};
-    u64 nx2_sync_epoch{};
-
 private:
     VAddr cpu_addr = 0;
     BufferFlagBits flags{};

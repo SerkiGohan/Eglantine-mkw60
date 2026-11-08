@@ -27,7 +27,6 @@
 #include "video_core/nx2_cb_hazard_probe.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/nx2_flush_probe.h"
-#include "video_core/nx2_sync_skip.h"
 #include "video_core/texture_cache/util.h"
 
 namespace VideoCommon {
@@ -2398,36 +2397,6 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
         }
         return true;
     }
-    // Fork mkw60 (sync skip, /tmp/eden_sync_skip, default on): the last synchronization of this
-    // buffer covered the range and left no CPU-modified page in it; if no page of the tracker
-    // manager has become CPU-modified since (same epoch), there is nothing to upload.
-    namespace SyncSkip = VideoCommon::Nx2SyncSkip;
-    const u32 sync_skip = SyncSkip::Mode();
-    const bool sync_probe = SyncSkip::ProbeEnabled();
-    const u64 sync_start = sync_probe ? SyncSkip::Ticks() : 0;
-    const u64 sync_epoch = sync_skip != 0 ? memory_tracker.Nx2CpuEpoch(device_addr, size) : 0;
-    if (sync_epoch != 0 && buffer.nx2_sync_epoch == sync_epoch && device_addr >= buffer.nx2_sync_begin &&
-        device_addr + size <= buffer.nx2_sync_end) {
-        if (sync_probe) [[unlikely]] {
-            SyncSkip::Note(sync_skip, true, false, sync_start);
-        }
-        return true;
-    }
-    const auto remember_clean = [&] {
-        // After ForEachUploadRange no page in the range is CPU-modified any more.
-        if (sync_epoch != 0) {
-            const u64 epoch_now = memory_tracker.Nx2CpuEpoch(device_addr, size);
-            if (buffer.nx2_sync_epoch == epoch_now && device_addr <= buffer.nx2_sync_end &&
-                device_addr + size >= buffer.nx2_sync_begin) {
-                buffer.nx2_sync_begin = (std::min)(buffer.nx2_sync_begin, device_addr);
-                buffer.nx2_sync_end = (std::max)(buffer.nx2_sync_end, device_addr + size);
-            } else {
-                buffer.nx2_sync_begin = device_addr;
-                buffer.nx2_sync_end = device_addr + size;
-                buffer.nx2_sync_epoch = epoch_now;
-            }
-        }
-    };
 #ifdef __ANDROID__
     const bool use_optimized_vertex_buffers = Settings::values.use_optimized_vertex_buffers.GetValue();
 #else
@@ -2458,11 +2427,7 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
             });
             add_upload(upload_start, device_addr_out + range_size);
         });
-        remember_clean();
         if (total_size_bytes == 0) {
-            if (sync_probe) [[unlikely]] {
-                SyncSkip::Note(sync_skip, false, false, sync_start);
-            }
             return true;
         }
         ++Nx2MutationProbe::t_counters.buffer_uploads; // M2 mutation probe
@@ -2474,9 +2439,6 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
         // Pokopia).
         if constexpr (!USE_MEMORY_MAPS_FOR_UPLOADS) {
             any_buffer_uploaded = true;
-        }
-        if (sync_probe) [[unlikely]] {
-            SyncSkip::Note(sync_skip, false, true, sync_start);
         }
         return false;
     } else {

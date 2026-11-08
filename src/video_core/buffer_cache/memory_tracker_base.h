@@ -49,20 +49,6 @@ public:
         });
     }
 
-    /// Fork mkw60 (sync skip): the CPU epoch of the manager holding the whole range, 0 if the range
-    /// spans managers or its manager does not exist yet.
-    [[nodiscard]] u64 Nx2CpuEpoch(VAddr cpu_address, u64 size) const noexcept {
-        if (size == 0) {
-            return 0;
-        }
-        const size_t first = cpu_address >> HIGHER_PAGE_BITS;
-        const size_t last = (cpu_address + size - 1) >> HIGHER_PAGE_BITS;
-        if (first != last || first >= top_tier.size() || top_tier[first] == nullptr) {
-            return 0;
-        }
-        return top_tier[first]->Nx2CpuEpoch(cpu_address & HIGHER_PAGE_MASK, size);
-    }
-
     /// Returns true if a region has been modified from the CPU
     [[nodiscard]] bool IsRegionCpuModified(VAddr query_cpu_addr, u64 query_size) noexcept {
         return IteratePages<true>(query_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
