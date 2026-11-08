@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <algorithm>
 #include <bit>
 #include <limits>
@@ -37,6 +38,15 @@ enum class Type {
 template <class DeviceTracker, size_t stack_words, size_t size_bytes>
 struct WordManager {
     static constexpr size_t num_words = Common::DivCeil(size_bytes, BYTES_PER_WORD);
+
+    /// Fork mkw60 (sync skip): changes whenever pages of this manager become CPU-modified. Values
+    /// are unique across managers (one global source), so a remembered value never matches a
+    /// different or recreated manager.
+    static inline std::atomic<u64> nx2_epoch_source{0};
+    u64 nx2_cpu_epoch = nx2_epoch_source.fetch_add(1, std::memory_order_relaxed) + 1;
+    void Nx2BumpCpuEpoch() noexcept {
+        nx2_cpu_epoch = nx2_epoch_source.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
 
     explicit WordManager(VAddr cpu_addr_, DeviceTracker& tracker_) : tracker{&tracker_}, cpu_addr{cpu_addr_} {
         std::fill_n(heap.data() + size_t(Type::CPU) * num_words, num_words, ~u64{0});
@@ -120,6 +130,9 @@ struct WordManager {
         [[maybe_unused]] std::span<u64> untracked_words = Span(Type::Untracked);
         [[maybe_unused]] std::span<u64> cached_words = Span(Type::CachedCPU);
         std::vector<std::pair<VAddr, u64>> ranges;
+        if (type == Type::CPU && enable) {
+            Nx2BumpCpuEpoch();
+        }
         IterateWords(dirty_addr - cpu_addr, size, [&](size_t index, u64 mask) {
             if (type == Type::CPU || type == Type::CachedCPU) {
                 CollectChangedRanges(!enable, index, untracked_words[index], mask, ranges);
@@ -253,6 +266,7 @@ struct WordManager {
         auto const untracked_words = Span(Type::Untracked);
         auto const cpu_words = Span(Type::CPU);
         std::vector<std::pair<VAddr, u64>> ranges;
+        Nx2BumpCpuEpoch();
         for (u64 word_index = 0; word_index < num_words; ++word_index) {
             const u64 cached_bits = cached_words[word_index];
             CollectChangedRanges(false, word_index, untracked_words[word_index], cached_bits, ranges);
