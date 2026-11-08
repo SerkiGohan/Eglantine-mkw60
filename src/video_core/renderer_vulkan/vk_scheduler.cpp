@@ -137,6 +137,7 @@ void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore)
 }
 
 void Scheduler::WaitWorker() {
+    Nx2CloseBlockEarly(); // P3 S3
     DispatchWork();
 
     // Ensure the queue is drained.
@@ -433,6 +434,7 @@ void Scheduler::AllocateWorkerCommandBuffer() {
 }
 
 u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
+    Nx2CloseBlockEarly(); // P3 S3: a submission ends the open block
     EndPendingOperations();
     InvalidateState();
 
@@ -591,6 +593,88 @@ void Scheduler::EndRenderPass()
         num_renderpass_images = 0;
     }
 
+
+namespace {
+/// P3 S3 statistics (back thread; worker waits counted atomically).
+struct Nx2BlockStats {
+    u64 blocks{}, early{};
+    std::atomic<u64> worker_waits{};
+    s64 last_report{};
+};
+Nx2BlockStats g_nx2_block_stats;
+thread_local std::shared_ptr<Scheduler::Nx2Block> t_nx2_block_owner;
+} // namespace
+
+void Scheduler::Nx2BeginBlock() {
+    Nx2EndBlock(); // never nested
+    auto block = std::make_shared<Nx2Block>();
+    RecordWithUploadBuffer([this, block](vk::CommandBuffer cmdbuf, vk::CommandBuffer upload_cmdbuf) {
+        if (!block->done.load(std::memory_order_acquire)) {
+            g_nx2_block_stats.worker_waits.fetch_add(1, std::memory_order_relaxed);
+            block->done.wait(false, std::memory_order_acquire);
+        }
+        for (auto& block_chunk : block->chunks) {
+            block_chunk->ExecuteAll(cmdbuf, upload_cmdbuf);
+        }
+        std::scoped_lock rl{reserve_mutex};
+        for (auto& block_chunk : block->chunks) {
+            chunk_reserve.emplace_back(std::move(block_chunk));
+        }
+        block->chunks.clear();
+    });
+    t_nx2_block_owner = std::move(block);
+    t_nx2_block = t_nx2_block_owner.get();
+}
+
+void Scheduler::Nx2EndBlock() {
+    if (t_nx2_block == nullptr) {
+        return;
+    }
+    t_nx2_block->done.store(true, std::memory_order_release);
+    t_nx2_block->done.notify_all();
+    t_nx2_block = nullptr;
+    t_nx2_block_owner.reset();
+    auto& stats = g_nx2_block_stats;
+    if ((++stats.blocks & 4095) != 0) {
+        return;
+    }
+    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    if (stats.last_report == 0) {
+        stats.blocks = stats.early = 0;
+        stats.worker_waits.store(0, std::memory_order_relaxed);
+        stats.last_report = now;
+        return;
+    }
+    if (now - stats.last_report < 10'000'000'000LL) {
+        return;
+    }
+    const double seconds = static_cast<double>(now - stats.last_report) / 1e9;
+    LOG_INFO(Render_Vulkan,
+             "Prep record: blocks {:.0f}/s | closed early {:.0f}/s | worker waited {:.0f}/s",
+             static_cast<double>(stats.blocks) / seconds, static_cast<double>(stats.early) / seconds,
+             static_cast<double>(stats.worker_waits.exchange(0, std::memory_order_relaxed)) / seconds);
+    stats.blocks = stats.early = 0;
+    stats.last_report = now;
+}
+
+void Scheduler::Nx2CloseBlockEarly() {
+    if (t_nx2_block != nullptr) [[unlikely]] {
+        ++g_nx2_block_stats.early;
+        Nx2EndBlock();
+    }
+}
+
+std::unique_ptr<Scheduler::CommandChunk> Scheduler::Nx2TakeChunk() {
+    std::scoped_lock rl{reserve_mutex};
+    if (chunk_reserve.empty()) {
+        return std::make_unique<CommandChunk>();
+    }
+    auto taken = std::move(chunk_reserve.back());
+    chunk_reserve.pop_back();
+    return taken;
+}
 
 void Scheduler::AcquireNewChunk() {
     std::scoped_lock rl{reserve_mutex};

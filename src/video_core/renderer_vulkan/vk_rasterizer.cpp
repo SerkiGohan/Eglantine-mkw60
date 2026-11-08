@@ -560,10 +560,27 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             }
         }
     }
+    // P3 S3 (EDEN_NX2_PREP_RECORD=1): queries and transform feedback before a clean draw's block,
+    // in the main stream; ConfigureImpl calls this when it opens the block.
+    std::optional<std::function<void()>> nx2_before_block;
+    if (GraphicsPipeline::Nx2PrepRecordEnabled()) [[unlikely]] {
+        nx2_before_block.emplace([this] {
+            query_cache.NotifySegment(true);
+            HandleTransformFeedback();
+            query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64,
+                                      maxwell3d->DrawRegs().zpass_pixel_count_enable);
+        });
+        GraphicsPipeline::t_nx2_before_block = &*nx2_before_block;
+    }
+    SCOPE_EXIT {
+        GraphicsPipeline::t_nx2_before_block = nullptr;
+        scheduler.Nx2EndBlock(); // also on early returns
+    };
     if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
         report_failure("configure failed");
         return;
     }
+    const bool nx2_in_block = Scheduler::Nx2InBlock();
     if (frame_dump.Capturing()) {
         frame_dump.NoteKeys(pipeline->ShaderHashes(),
                             pipeline_cache.GraphicsNativeKeys(pipeline->ShaderHashes()));
@@ -591,9 +608,11 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         UpdateDynamicStates();
     }
 
-    query_cache.NotifySegment(true);
-    HandleTransformFeedback();
-    query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64, maxwell3d->DrawRegs().zpass_pixel_count_enable);
+    if (!nx2_in_block) {
+        query_cache.NotifySegment(true);
+        HandleTransformFeedback();
+        query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64, maxwell3d->DrawRegs().zpass_pixel_count_enable);
+    }
     // EDEN_NX2_DIAG_SAMPLES: count the samples this draw passes while a draw list is captured. The
     // game's own occlusion counting is left alone (one occlusion query can be active at a time).
     int diag_query = -1;
@@ -610,6 +629,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         Profile::Scope scope{Profile::Zone::DrawRecord};
         draw_func();
     }
+    scheduler.Nx2EndBlock(); // P3 S3: the draw is the block's last command
     if (diag_query >= 0) {
         scheduler.Record([pool = **g_diag_pool, diag_query](vk::CommandBuffer cmdbuf) {
             cmdbuf.EndQuery(pool, static_cast<u32>(diag_query));

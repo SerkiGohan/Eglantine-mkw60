@@ -132,6 +132,13 @@ public:
 
     void AddTransition(GraphicsPipeline* transition);
 
+    /// P3 S3 (EDEN_NX2_PREP_RECORD=1, needs EDEN_NX2_PREP_SPLIT=1 and EDEN_NX2_PREP_PRECHECK=1):
+    /// a clean draw's preparation records into its own block (Scheduler::Nx2BeginBlock).
+    static bool Nx2PrepRecordEnabled();
+    /// P3 S3: set by RasterizerVulkan::PrepareDraw around Configure: the serial work that has to be
+    /// in the main stream before the block (queries, transform feedback).
+    static inline thread_local const std::function<void()>* t_nx2_before_block{};
+
     bool Configure(bool is_indexed) {
         return configure_func(this, is_indexed);
     }

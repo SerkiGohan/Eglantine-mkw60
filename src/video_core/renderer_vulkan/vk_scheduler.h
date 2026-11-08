@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <vector>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -132,12 +134,28 @@ public:
         on_submit = std::move(func);
     }
 
+    /// P3 S3 (EDEN_NX2_PREP_RECORD, docs/mkw60-p3-plan.md): a draw's preparation records into a
+    /// block of its own. The main stream holds a placeholder at the block's position; the worker
+    /// waits there until the block is complete and executes its commands in place.
+    struct Nx2Block;
+    /// Records the placeholder and sends this thread's Record calls into a new block.
+    void Nx2BeginBlock();
+    /// Completes the block opened on this thread; nothing if there is none.
+    void Nx2EndBlock();
+    [[nodiscard]] static bool Nx2InBlock() noexcept {
+        return t_nx2_block != nullptr;
+    }
+
     /// Send work to a separate thread.
     template <typename T>
         requires std::is_invocable_v<T, vk::CommandBuffer, vk::CommandBuffer>
     void RecordWithUploadBuffer(T&& command) {
         if (Common::Nx2CacheGuard::t_shadow_prep) [[unlikely]] {
             return; // P2 shadow: commands are dropped
+        }
+        if (t_nx2_block != nullptr) [[unlikely]] {
+            Nx2RecordInBlock(command); // P3 S3: into the open block
+            return;
         }
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::SchedulerRecord); // B2 cache guard
         if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
@@ -187,6 +205,7 @@ public:
     /// wait for the recording thread to submit the tick instead, and give up after 20 ms (it may
     /// be waiting for them).
     void Wait(u64 tick, double target_fps = 0.0, bool may_flush = true) {
+        Nx2CloseBlockEarly(); // P3 S3: the worker must not wait for a block this thread holds
         if (tick > 0 && (may_flush || WaitForSubmission(tick))) {
             if (tick >= master_semaphore->CurrentTick()) {
                 Flush();
@@ -348,6 +367,16 @@ private:
 
     void AllocateNewContext();
 
+    /// P3 S3: block support (see Nx2BeginBlock).
+    template <typename T>
+    void Nx2RecordInBlock(T& command);
+    std::unique_ptr<CommandChunk> Nx2TakeChunk();
+    /// Before waiting for the worker or submitting: completes an open block early. What this
+    /// thread records afterwards goes to the main stream, behind the placeholder, so the order
+    /// stays the same.
+    void Nx2CloseBlockEarly();
+    static inline thread_local Nx2Block* t_nx2_block{};
+
     void EndPendingOperations();
 
     void EndRenderPass();
@@ -393,5 +422,20 @@ private:
     u64 max_frame_count{};
     u64 frame_counter{};
 };
+
+/// P3 S3: commands of one prepared draw (or several), executed by the worker at the placeholder.
+struct Scheduler::Nx2Block {
+    std::vector<std::unique_ptr<CommandChunk>> chunks;
+    std::atomic<bool> done{false};
+};
+
+template <typename T>
+void Scheduler::Nx2RecordInBlock(T& command) {
+    auto& chunks = t_nx2_block->chunks;
+    if (chunks.empty() || !chunks.back()->Record(command)) {
+        chunks.push_back(Nx2TakeChunk());
+        (void)chunks.back()->Record(command);
+    }
+}
 
 } // namespace Vulkan

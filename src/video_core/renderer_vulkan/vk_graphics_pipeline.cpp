@@ -428,6 +428,17 @@ bool Nx2PrepPrecheckEnabled() {
     return enabled;
 }
 
+} // namespace
+
+bool GraphicsPipeline::Nx2PrepRecordEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_PREP_RECORD");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+namespace {
 /// Precheck verdicts: 0 clean, 1 index, 2 vertex, 3 storage, 4 special draw (transform feedback,
 /// indirect, inline indices), 5 texel/image buffers; NoPrecheck = not checked.
 constexpr u32 NX2_PRECHECK_REASONS = 6;
@@ -914,6 +925,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     VideoCommon::Nx2MutationProbe::Counters split_before{};
     u32 split_precheck = NX2_NO_PRECHECK;
     u64 split_precheck_ns = 0;
+    bool descriptors_acquired = false; // P3 S3: already done before the block
     std::unique_ptr<Nx2ShadowJob> shadow_job;
     if (prep_split) [[unlikely]] {
         {
@@ -944,8 +956,10 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             const auto check_start = std::chrono::steady_clock::now();
             const auto& precheck_state = maxwell3d->DrawStateView();
             u32 verdict = buffer_cache.Nx2PrepPrecheck(is_indexed);
+            const bool quads = precheck_state.topology == Maxwell::PrimitiveTopology::Quads ||
+                               precheck_state.topology == Maxwell::PrimitiveTopology::QuadStrip;
             if (verdict == 0 && (regs.transform_feedback_enabled != 0 ||
-                                 buffer_cache.Nx2IsDrawIndirect() ||
+                                 buffer_cache.Nx2IsDrawIndirect() || quads ||
                                  !precheck_state.inline_index_draw_indexes.empty())) {
                 verdict = 4;
             }
@@ -995,6 +1009,22 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                 shadow_job->uniform_end = split_uniform_end;
                 shadow_job->is_indexed = is_indexed;
             }
+        }
+        // P3 S3: a clean draw gets its descriptor range, render pass and queries here, in the main
+        // stream, and records the rest of its work into a block of its own.
+        if (split_precheck == 0 && t_nx2_before_block != nullptr) [[unlikely]] {
+            {
+                Profile::Scope scope{Profile::Zone::DescriptorAcquire};
+                guest_descriptor_queue.Acquire(scheduler, num_descriptor_entries,
+                                               uses_descriptor_buffer);
+            }
+            if (GuestDescriptorQueue::Nx2WriterEnabled()) [[unlikely]] {
+                guest_descriptor_queue.Reserve(num_descriptor_entries);
+            }
+            descriptors_acquired = true;
+            scheduler.RequestRenderpass(texture_cache.GetFramebuffer());
+            (*t_nx2_before_block)();
+            scheduler.Nx2BeginBlock();
         }
     }
     u64 repeat_input = 0;
@@ -1138,14 +1168,16 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         buffer_cache.BindHostGeometryBuffers(is_indexed);
     }
 
-    {
-        Profile::Scope scope{Profile::Zone::DescriptorAcquire};
-        guest_descriptor_queue.Acquire(scheduler, num_descriptor_entries, uses_descriptor_buffer);
-    }
-    // B2 step 3, piece 3: with EDEN_NX2_DESC_WRITER=1 the draw writes its descriptors into its own
-    // reserved range until the end of ConfigureImpl.
-    if (GuestDescriptorQueue::Nx2WriterEnabled()) [[unlikely]] {
-        guest_descriptor_queue.Reserve(num_descriptor_entries);
+    if (!descriptors_acquired) {
+        {
+            Profile::Scope scope{Profile::Zone::DescriptorAcquire};
+            guest_descriptor_queue.Acquire(scheduler, num_descriptor_entries, uses_descriptor_buffer);
+        }
+        // B2 step 3, piece 3: with EDEN_NX2_DESC_WRITER=1 the draw writes its descriptors into its
+        // own reserved range until the end of ConfigureImpl.
+        if (GuestDescriptorQueue::Nx2WriterEnabled()) [[unlikely]] {
+            guest_descriptor_queue.Reserve(num_descriptor_entries);
+        }
     }
     SCOPE_EXIT {
         guest_descriptor_queue.EndReservation();
