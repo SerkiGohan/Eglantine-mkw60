@@ -11,7 +11,10 @@
 #include <span>
 #include <type_traits>
 
+#include <atomic>
+#include <chrono>
 #include "common/common_types.h"
+#include "common/logging.h"
 
 namespace VideoCommon {
 
@@ -86,6 +89,68 @@ inline void ResetUniformStreamReuse() noexcept {
 /// buffer, reusing the slot's previous allocation when the bytes and the command buffer are the
 /// same. Returns false (nothing bound) when the buffer does not qualify, so the caller binds it
 /// the classic way.
+/// Fork mkw60 (measurement only, EDEN_NX2_UBO_PROBE=1): how often the reuse check pays off.
+/// One "UBO probe" line every ~10 s: binds, bytes, same bytes in the same command buffer
+/// (rebound), same bytes but a new command buffer, different bytes; size classes.
+struct UboProbe {
+    u64 binds{}, bytes{}, rebound{}, same_other_tick{}, changed{}, first{};
+    std::array<u64, 5> size_classes{}; ///< <=64, <=256, <=1024, <=4096, >4096 (not here)
+    s64 last_report{};
+};
+
+[[nodiscard]] inline bool UboProbeEnabled() noexcept {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_UBO_PROBE");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+inline void UboProbeNote(u32 size, int outcome) {
+    static UboProbe probe;
+    ++probe.binds;
+    probe.bytes += size;
+    probe.size_classes[size <= 64 ? 0 : size <= 256 ? 1 : size <= 1024 ? 2 : 3]++;
+    switch (outcome) {
+    case 0: ++probe.rebound; break;
+    case 1: ++probe.same_other_tick; break;
+    case 2: ++probe.changed; break;
+    default: ++probe.first; break;
+    }
+    if ((probe.binds & 16383) != 0) {
+        return;
+    }
+    const s64 now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    if (probe.last_report == 0) {
+        probe = {};
+        probe.last_report = now;
+        return;
+    }
+    if (now - probe.last_report < 10'000) {
+        return;
+    }
+    const double seconds = static_cast<double>(now - probe.last_report) / 1000.0;
+    const double binds = static_cast<double>(probe.binds);
+    LOG_INFO(HW_GPU,
+             "UBO probe: Binds {:.0f}/s, {:.1f} MiB/s ({:.0f} bytes per bind) | same + same "
+             "command buffer (rebound) {:.1f} %, same but other command buffer {:.1f} %, "
+             "changed {:.1f} %, first time {:.1f} % | sizes <=64 {:.0f} %, <=256 {:.0f} %, "
+             "<=1K {:.0f} %, <=4K {:.0f} %",
+             binds / seconds, static_cast<double>(probe.bytes) / 1048576.0 / seconds,
+             static_cast<double>(probe.bytes) / binds, 100.0 * static_cast<double>(probe.rebound) / binds,
+             100.0 * static_cast<double>(probe.same_other_tick) / binds,
+             100.0 * static_cast<double>(probe.changed) / binds,
+             100.0 * static_cast<double>(probe.first) / binds,
+             100.0 * static_cast<double>(probe.size_classes[0]) / binds,
+             100.0 * static_cast<double>(probe.size_classes[1]) / binds,
+             100.0 * static_cast<double>(probe.size_classes[2]) / binds,
+             100.0 * static_cast<double>(probe.size_classes[3]) / binds);
+    probe = {};
+    probe.last_report = now;
+}
+
 template <class Runtime, class DeviceMemory>
 [[nodiscard]] bool BindSmallUniformReusing(Runtime& runtime, DeviceMemory& device_memory,
                                            size_t stage, u32 index, u32 binding_index,
@@ -102,6 +167,11 @@ template <class Runtime, class DeviceMemory>
 
     const bool same_bytes =
         slot.size == size && std::memcmp(slot.bytes.data(), scratch, size) == 0;
+    if (UboProbeEnabled()) [[unlikely]] {
+        const int outcome = same_bytes ? (slot.tick == runtime.CurrentTick() ? 0 : 1)
+                                       : (slot.size == 0 ? 3 : 2);
+        UboProbeNote(size, outcome);
+    }
     if (same_bytes && slot.tick == runtime.CurrentTick()) {
         runtime.RebindStreamUniform(slot.ref, size);
         return true;
