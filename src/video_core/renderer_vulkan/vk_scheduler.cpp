@@ -31,6 +31,18 @@
 
 namespace Vulkan {
 
+namespace {
+/// P3 S3 statistics (back thread; worker waits counted atomically).
+struct Nx2BlockStats {
+    u64 blocks{}, draws{}, early{}, main_fresh{};
+    std::atomic<u64> worker_waits{};
+    s64 last_report{};
+};
+Nx2BlockStats g_nx2_block_stats;
+thread_local std::shared_ptr<Scheduler::Nx2Block> t_nx2_block_owner;
+
+} // namespace
+
 void Scheduler::CommandChunk::ExecuteAll(vk::CommandBuffer cmdbuf,
                                          vk::CommandBuffer upload_cmdbuf) {
     auto command = first;
@@ -314,6 +326,7 @@ void Scheduler::RequestOutsideRenderPassOperationContext() {
 }
 
 bool Scheduler::UpdateGraphicsPipeline(GraphicsPipeline* pipeline) {
+    Nx2EnsureMainFresh(); // P3 S3b
     if (state.graphics_pipeline == pipeline) {
         if (pipeline && pipeline->UsesExtendedDynamicState() &&
             state.needs_state_enable_refresh) {
@@ -340,6 +353,7 @@ bool Scheduler::UpdateGraphicsPipeline(GraphicsPipeline* pipeline) {
 }
 
 bool Scheduler::UpdateRescaling(bool is_rescaling) {
+    Nx2EnsureMainFresh(); // P3 S3b
     if (state.rescaling_defined && is_rescaling == state.is_rescaling) {
         return false;
     }
@@ -349,6 +363,7 @@ bool Scheduler::UpdateRescaling(bool is_rescaling) {
 }
 
 bool Scheduler::UpdateDescriptorBufferChunk(u32 descriptor_chunk) {
+    Nx2EnsureMainFresh(); // P3 S3b
     if (state.descriptor_buffer_bound && descriptor_chunk == state.descriptor_buffer_chunk) {
         return false;
     }
@@ -501,6 +516,10 @@ void Scheduler::AllocateNewContext() {
 }
 
 void Scheduler::InvalidateState() {
+    if (t_nx2_block == nullptr && nx2_main_stale) {
+        nx2_main_stale = false;
+        ++g_nx2_block_stats.main_fresh;
+    }
     state.graphics_pipeline = nullptr;
     state.rescaling_defined = false;
     state.descriptor_buffer_bound = false;
@@ -595,18 +614,91 @@ void Scheduler::EndRenderPass()
 
 
 namespace {
-/// P3 S3 statistics (back thread; worker waits counted atomically).
-struct Nx2BlockStats {
-    u64 blocks{}, early{};
-    std::atomic<u64> worker_waits{};
-    s64 last_report{};
-};
-Nx2BlockStats g_nx2_block_stats;
-thread_local std::shared_ptr<Scheduler::Nx2Block> t_nx2_block_owner;
+void Nx2ReportBlocks() {
+    auto& stats = g_nx2_block_stats;
+    if ((stats.blocks & 1023) != 0) {
+        return;
+    }
+    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    if (stats.last_report == 0) {
+        stats.blocks = stats.draws = stats.early = stats.main_fresh = 0;
+        stats.worker_waits.store(0, std::memory_order_relaxed);
+        stats.last_report = now;
+        return;
+    }
+    if (now - stats.last_report < 10'000'000'000LL) {
+        return;
+    }
+    const double seconds = static_cast<double>(now - stats.last_report) / 1e9;
+    LOG_INFO(Render_Vulkan,
+             "Prep record: blocks {:.0f}/s, {:.1f} draws/block | closed early {:.0f}/s | worker "
+             "waited {:.0f}/s | main stream reset {:.0f}/s",
+             static_cast<double>(stats.blocks) / seconds,
+             stats.blocks ? static_cast<double>(stats.draws) / static_cast<double>(stats.blocks) : 0.0,
+             static_cast<double>(stats.early) / seconds,
+             static_cast<double>(stats.worker_waits.exchange(0, std::memory_order_relaxed)) / seconds,
+             static_cast<double>(stats.main_fresh) / seconds);
+    stats.blocks = stats.draws = stats.early = stats.main_fresh = 0;
+    stats.last_report = now;
+}
 } // namespace
 
-void Scheduler::Nx2BeginBlock() {
-    Nx2EndBlock(); // never nested
+struct Scheduler::Nx2Context {
+    GraphicsPipeline* graphics_pipeline{};
+    bool is_rescaling{};
+    bool rescaling_defined{};
+    bool needs_state_enable_refresh{};
+    u32 descriptor_buffer_chunk{};
+    bool descriptor_buffer_bound{};
+    StateTracker::Nx2Scalars tracker{};
+};
+
+void Scheduler::Nx2SaveContext(Nx2Context& context) const {
+    context.graphics_pipeline = state.graphics_pipeline;
+    context.is_rescaling = state.is_rescaling;
+    context.rescaling_defined = state.rescaling_defined;
+    context.needs_state_enable_refresh = state.needs_state_enable_refresh;
+    context.descriptor_buffer_chunk = state.descriptor_buffer_chunk;
+    context.descriptor_buffer_bound = state.descriptor_buffer_bound;
+    context.tracker = state_tracker.Nx2Save();
+}
+
+void Scheduler::Nx2LoadContext(const Nx2Context& context) {
+    state.graphics_pipeline = context.graphics_pipeline;
+    state.is_rescaling = context.is_rescaling;
+    state.rescaling_defined = context.rescaling_defined;
+    state.needs_state_enable_refresh = context.needs_state_enable_refresh;
+    state.descriptor_buffer_chunk = context.descriptor_buffer_chunk;
+    state.descriptor_buffer_bound = context.descriptor_buffer_bound;
+    state_tracker.Nx2Load(context.tracker);
+}
+
+void Scheduler::Nx2EnterBlock(u32 max_draws) {
+    if (t_nx2_block != nullptr) {
+        return;
+    }
+    if (!nx2_main_context) {
+        nx2_main_context = std::make_unique<Nx2Context>();
+        nx2_block_context = std::make_unique<Nx2Context>();
+    }
+    ++g_nx2_block_stats.draws;
+    if (nx2_paused_block && nx2_block_draws < max_draws) {
+        // Continue the paused block with its own state.
+        Nx2SaveContext(*nx2_main_context);
+        Nx2LoadContext(*nx2_block_context);
+        t_nx2_block_owner = std::move(nx2_paused_block);
+        t_nx2_block = t_nx2_block_owner.get();
+        ++nx2_block_draws;
+        return;
+    }
+    Nx2CompletePaused();
+    nx2_block_max = max_draws;
+    Nx2BeginNewBlock();
+}
+
+void Scheduler::Nx2BeginNewBlock() {
     auto block = std::make_shared<Nx2Block>();
     RecordWithUploadBuffer([this, block](vk::CommandBuffer cmdbuf, vk::CommandBuffer upload_cmdbuf) {
         if (!block->done.load(std::memory_order_acquire)) {
@@ -622,48 +714,49 @@ void Scheduler::Nx2BeginBlock() {
         }
         block->chunks.clear();
     });
+    // A new block knows nothing about the GPU state: everything is set again inside it.
+    Nx2SaveContext(*nx2_main_context);
     t_nx2_block_owner = std::move(block);
     t_nx2_block = t_nx2_block_owner.get();
+    InvalidateState();
+    nx2_block_draws = 1;
 }
 
-void Scheduler::Nx2EndBlock() {
+void Scheduler::Nx2PauseBlock() {
     if (t_nx2_block == nullptr) {
         return;
     }
-    t_nx2_block->done.store(true, std::memory_order_release);
-    t_nx2_block->done.notify_all();
+    Nx2SaveContext(*nx2_block_context);
+    Nx2LoadContext(*nx2_main_context);
+    nx2_main_stale = true; // the GPU now has the block's state
+    nx2_paused_block = std::move(t_nx2_block_owner);
     t_nx2_block = nullptr;
-    t_nx2_block_owner.reset();
-    auto& stats = g_nx2_block_stats;
-    if ((++stats.blocks & 4095) != 0) {
+    if (nx2_block_draws >= nx2_block_max) {
+        Nx2CompletePaused();
+    }
+}
+
+void Scheduler::Nx2CompletePaused() {
+    if (!nx2_paused_block) {
         return;
     }
-    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch())
-                        .count();
-    if (stats.last_report == 0) {
-        stats.blocks = stats.early = 0;
-        stats.worker_waits.store(0, std::memory_order_relaxed);
-        stats.last_report = now;
-        return;
-    }
-    if (now - stats.last_report < 10'000'000'000LL) {
-        return;
-    }
-    const double seconds = static_cast<double>(now - stats.last_report) / 1e9;
-    LOG_INFO(Render_Vulkan,
-             "Prep record: blocks {:.0f}/s | closed early {:.0f}/s | worker waited {:.0f}/s",
-             static_cast<double>(stats.blocks) / seconds, static_cast<double>(stats.early) / seconds,
-             static_cast<double>(stats.worker_waits.exchange(0, std::memory_order_relaxed)) / seconds);
-    stats.blocks = stats.early = 0;
-    stats.last_report = now;
+    const auto block = std::move(nx2_paused_block);
+    block->done.store(true, std::memory_order_release);
+    block->done.notify_all();
+    ++g_nx2_block_stats.blocks;
+    Nx2ReportBlocks();
+}
+
+void Scheduler::Nx2EndBlock() {
+    Nx2PauseBlock();
+    Nx2CompletePaused();
 }
 
 void Scheduler::Nx2CloseBlockEarly() {
     if (t_nx2_block != nullptr) [[unlikely]] {
         ++g_nx2_block_stats.early;
-        Nx2EndBlock();
     }
+    Nx2EndBlock();
 }
 
 std::unique_ptr<Scheduler::CommandChunk> Scheduler::Nx2TakeChunk() {

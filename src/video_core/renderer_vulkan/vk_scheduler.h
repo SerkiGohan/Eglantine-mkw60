@@ -138,12 +138,27 @@ public:
     /// block of its own. The main stream holds a placeholder at the block's position; the worker
     /// waits there until the block is complete and executes its commands in place.
     struct Nx2Block;
-    /// Records the placeholder and sends this thread's Record calls into a new block.
-    void Nx2BeginBlock();
-    /// Completes the block opened on this thread; nothing if there is none.
+    /// Sends this thread's Record calls into a block: continues the paused block when nothing was
+    /// recorded into the main stream since and it holds fewer than `max_draws` draws, otherwise
+    /// completes it and records the placeholder of a new one. P3 S3b: a block has its own command
+    /// stream state (pipeline, rescaling, descriptor buffer chunk, state tracker), fresh in a new
+    /// block; the main stream's state counts as stale after a block (see Nx2EnsureMainFresh).
+    void Nx2EnterBlock(u32 max_draws);
+    /// End of a draw in the block: back to the main stream's state; the block stays open for the
+    /// next draw (completed when full or when anything else is recorded).
+    void Nx2PauseBlock();
+    /// Completes the block (open or paused).
     void Nx2EndBlock();
     [[nodiscard]] static bool Nx2InBlock() noexcept {
         return t_nx2_block != nullptr;
+    }
+    /// Main stream graphics state users that do not go through Update* below (DrawTexture): makes
+    /// the main stream's state fresh if a block changed the GPU state since.
+    void Nx2EnsureMainFresh() {
+        if (nx2_main_stale && t_nx2_block == nullptr) [[unlikely]] {
+            nx2_main_stale = false;
+            InvalidateState();
+        }
     }
 
     /// Send work to a separate thread.
@@ -156,6 +171,9 @@ public:
         if (t_nx2_block != nullptr) [[unlikely]] {
             Nx2RecordInBlock(command); // P3 S3: into the open block
             return;
+        }
+        if (nx2_paused_block) [[unlikely]] {
+            Nx2CompletePaused(); // anything in the main stream ends the paused block
         }
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::SchedulerRecord); // B2 cache guard
         if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
@@ -371,6 +389,18 @@ private:
     template <typename T>
     void Nx2RecordInBlock(T& command);
     std::unique_ptr<CommandChunk> Nx2TakeChunk();
+    void Nx2BeginNewBlock();
+    void Nx2CompletePaused();
+    /// P3 S3b: command stream state of a context (main stream or block), swapped on enter/pause.
+    struct Nx2Context;
+    void Nx2SaveContext(Nx2Context& context) const;
+    void Nx2LoadContext(const Nx2Context& context);
+    std::unique_ptr<Nx2Context> nx2_main_context;  ///< main stream state while a block records
+    std::unique_ptr<Nx2Context> nx2_block_context; ///< block state while it is paused
+    std::shared_ptr<Nx2Block> nx2_paused_block;
+    u32 nx2_block_draws{};
+    u32 nx2_block_max{};
+    bool nx2_main_stale{};
     /// Before waiting for the worker or submitting: completes an open block early. What this
     /// thread records afterwards goes to the main stream, behind the placeholder, so the order
     /// stays the same.

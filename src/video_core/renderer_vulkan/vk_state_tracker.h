@@ -320,6 +320,26 @@ private:
     StencilProperties front{};
     StencilProperties back{};
     bool stencil_reset = false;
+
+public:
+    /// P3 S3b: what the tracker remembers about one command stream (the dirty flags are per draw).
+    struct Nx2Scalars {
+        Maxwell::PrimitiveTopology topology = INVALID_TOPOLOGY;
+        bool two_sided_stencil = false;
+        StencilProperties front{};
+        StencilProperties back{};
+        bool stencil_reset = true;
+    };
+    [[nodiscard]] Nx2Scalars Nx2Save() const noexcept {
+        return {current_topology, two_sided_stencil, front, back, stencil_reset};
+    }
+    void Nx2Load(const Nx2Scalars& scalars) noexcept {
+        current_topology = scalars.topology;
+        two_sided_stencil = scalars.two_sided_stencil;
+        front = scalars.front;
+        back = scalars.back;
+        stencil_reset = scalars.stencil_reset;
+    }
 };
 
 } // namespace Vulkan

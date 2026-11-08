@@ -574,7 +574,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     }
     SCOPE_EXIT {
         GraphicsPipeline::t_nx2_before_block = nullptr;
-        scheduler.Nx2EndBlock(); // also on early returns
+        scheduler.Nx2PauseBlock(); // also on early returns
     };
     if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
         report_failure("configure failed");
@@ -629,7 +629,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         Profile::Scope scope{Profile::Zone::DrawRecord};
         draw_func();
     }
-    scheduler.Nx2EndBlock(); // P3 S3: the draw is the block's last command
+    scheduler.Nx2PauseBlock(); // P3 S3b: the next clean draw may continue the block
     if (diag_query >= 0) {
         scheduler.Record([pool = **g_diag_pool, diag_query](vk::CommandBuffer cmdbuf) {
             cmdbuf.EndQuery(pool, static_cast<u32>(diag_query));
@@ -1122,6 +1122,7 @@ void RasterizerVulkan::DrawTexture() {
     texture_cache.SynchronizeDescriptors(false);
     texture_cache.UpdateRenderTargets(false);
 
+    scheduler.Nx2EnsureMainFresh(); // P3 S3b: after a block the main stream state is stale
     UpdateDynamicStates();
 
     query_cache.NotifySegment(true);

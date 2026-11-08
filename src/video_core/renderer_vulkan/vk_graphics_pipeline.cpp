@@ -430,6 +430,16 @@ bool Nx2PrepPrecheckEnabled() {
 
 } // namespace
 
+/// P3 S3b: consecutive clean draws per block (EDEN_NX2_PREP_BLOCK_DRAWS, default 1).
+static u32 Nx2PrepBlockDraws() {
+    static const u32 draws = [] {
+        const char* value = std::getenv("EDEN_NX2_PREP_BLOCK_DRAWS");
+        const unsigned long parsed = value != nullptr ? std::strtoul(value, nullptr, 10) : 1;
+        return static_cast<u32>(parsed < 1 ? 1 : (parsed > 4096 ? 4096 : parsed));
+    }();
+    return draws;
+}
+
 bool GraphicsPipeline::Nx2PrepRecordEnabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("EDEN_NX2_PREP_RECORD");
@@ -1024,7 +1034,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             descriptors_acquired = true;
             scheduler.RequestRenderpass(texture_cache.GetFramebuffer());
             (*t_nx2_before_block)();
-            scheduler.Nx2BeginBlock();
+            scheduler.Nx2EnterBlock(Nx2PrepBlockDraws());
         }
     }
     u64 repeat_input = 0;
