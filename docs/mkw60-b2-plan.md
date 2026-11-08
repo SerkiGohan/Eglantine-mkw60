@@ -200,3 +200,19 @@ Race, ~85,000–99,000 draws/s:
 - Outside draws ~4,500 invalidations/s (DMA, copies).
 - Starting points: (1) merge nearby ranges in the same memory block (fewer passes; invalidating too much is harmless in the buffer cache,
   in the texture cache theoretically not), (2) a fast path in the buffer cache if the range is already CPU-modified and not GPU-modified.
+
+## Flush optimization A/B (8.11.2026 ~00:10, Mario Bros. Circuit with ghost, fork `f99ae01943`, `knob_sweep.py flush_opt 0 3 0 3 0 3 0 1 2 0 3`, log `~/mkw-perf/fork/flush-opt-ab-mario.log`)
+
+Cost per draw (flush measurement, weighted over all windows with > 20,000 draws):
+
+| Mode | ranges per invalidation | FlushCaching | buffer cache | query | texture | pipeline |
+|---|---|---|---|---|---|---|
+| 0 off | 5.25 | 728 ns | 443 ns | 86 | 78 | 61 |
+| 1 merge | 4.57 → **2.71** | **476 ns** | 231 ns | 54 | 58 | 47 |
+| 2 fast path | 5.13 | 547 ns | 259 ns | 83 | 76 | 61 |
+| 3 both | 4.91 → 3.00 | 501 ns | 239 ns | 58 | 63 | 50 |
+
+- Merging saves **~250 ns per draw ≈ 23 ms/s** (~2.5–3 % of the back thread), the fast path alone ~180 ns, both together no more
+  than merging alone (after merging there is little left for the fast path).
+- Frame times from the timelines (0: 20.96 ms, 3: 21.85 ms, 1: 22.1, 2: 16.9) vary with the track section more than the expected
+  gain (~0.25 ms/frame) – not measurable like this in a race. Window `09-2` was in the finish/lap loop (the game waits 9.3 ms/f).
