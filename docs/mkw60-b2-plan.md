@@ -233,3 +233,21 @@ Cost per draw (flush measurement, weighted over all windows with > 20,000 draws)
 - Conclusion on the uniform copy: most of it is the copies themselves (~520,000 × ~520 B/s) and the comparison – both needed. More would
   only be possible with fewer copies overall (e.g. not copying uniforms at all, but binding guest memory directly as a buffer if it does
   not change until execution – but that is exactly what the CB hazard from B1 step 1 rules out).
+
+## Serial chunk "SynchronizeBuffer" – sync skip (8.11.2026, Mario Bros. Circuit with ghost, A/B in both orders)
+
+| Version | skipped | ns per call (off → on) | frame time forward off/on | reverse off/on |
+|---|---|---|---|---|
+| counter per 4 MiB (`102f72b1f3`) | 36.4 % | 119 → 106 | 23.7 / 20.8 ms | 21.6 / 22.3 ms |
+| counter per 256 KiB (`59f3e59ae0`) | 36.7 % | 104 → 100 | 21.2 / 23.0 ms | 20.0 / 21.7 ms |
+
+- Uploads unchanged (~0.65 % of calls), no rendering errors.
+- Finer counters change **nothing** about the share: the remaining ~63 % are ranges the buffer had not checked before
+  (index/vertex ranges move, cf. M1: addresses change every frame) – not dirty ranges.
+- Savings at most ~4–13 ns per call (≈ 3–8 ms/s). In the second version "on" was ~1.7 ms/frame worse in **both** orders
+  (cause unclear, possibly noise). → **Not adopted**, the switch stays off (the code stays for later attempts).
+- Logs `~/mkw-perf/fork/sync-skip-ab-mario.log`, `~/mkw-perf/fork/sync-skip2-ab-mario.log`, timelines `~/mkw-perf/traces/sync_skip-*`.
+
+**Status of the serial chunks:** flush work −23 ms/s (on), uniform copy −7 ms/s (on), SynchronizeBuffer rejected. The others
+(image views ~40, handles ~34 ms/s wall clock) have the same shape: many small lookups per draw whose inputs (addresses)
+change constantly – shortcuts through caches work poorly there for the same reason.
