@@ -26,11 +26,12 @@ inline constexpr std::array<const char*, NumParts> part_names{
     "FlushWork", "FlushCaching total", "texture cache", "buffer cache", "query cache", "pipeline cache"};
 
 /// Flush optimisations (fork mkw60), bit mask: 1 = merge nearby ranges of a draw's invalidation,
-/// 2 = buffer cache fast path for ranges already CPU-modified. Start value EDEN_NX2_FLUSH_OPT,
-/// at run time /tmp/eden_flush_opt (read every ~250 ms; for knob_sweep.py flush_opt).
+/// 2 = buffer cache fast path for ranges already CPU-modified. Start value EDEN_NX2_FLUSH_OPT
+/// (default 1: merging measured ~250 ns less per draw, A/B 8.11.2026), at run time
+/// /tmp/eden_flush_opt (read every ~250 ms; for knob_sweep.py flush_opt).
 inline std::atomic<u32> g_opt{[] {
     const char* value = std::getenv("EDEN_NX2_FLUSH_OPT");
-    return value != nullptr ? static_cast<u32>(std::strtoul(value, nullptr, 10)) & 3U : 0U;
+    return value != nullptr ? static_cast<u32>(std::strtoul(value, nullptr, 10)) & 3U : 1U;
 }()};
 
 inline u32 Opt() {

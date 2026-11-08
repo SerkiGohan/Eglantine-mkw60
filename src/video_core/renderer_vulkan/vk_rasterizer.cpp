@@ -1625,7 +1625,10 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
     }
     // Flush opt 1 (fork mkw60): a draw's invalidation is mostly a handful of constant buffer
     // updates a few bytes apart. Ranges in the same 4 KiB page at most 256 bytes apart are
-    // merged, so each cache walks fewer ranges (invalidating the bytes in between as well).
+    // merged, so the buffer, query and pipeline caches walk fewer ranges (invalidating the bytes
+    // in between as well is harmless there). The texture cache keeps the exact ranges: a
+    // GPU-written image in such a gap would otherwise be reloaded from guest memory.
+    const std::span<const std::pair<DAddr, std::size_t>> exact_sequences = sequences;
     boost::container::small_vector<std::pair<DAddr, std::size_t>, 16> merged;
     if (FlushProbe::t_in_draw_flush && sequences.size() > 1 && (FlushProbe::Opt() & 1) != 0) {
         constexpr DAddr page_mask = ~DAddr{4095};
@@ -1655,7 +1658,7 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
     }
     {
         std::scoped_lock lock{texture_cache.mutex};
-        for (const auto& [addr, size] : sequences) {
+        for (const auto& [addr, size] : exact_sequences) {
             texture_cache.WriteMemory(addr, size);
         }
     }
