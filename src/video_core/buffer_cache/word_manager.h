@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <algorithm>
 #include <bit>
@@ -39,13 +40,30 @@ template <class DeviceTracker, size_t stack_words, size_t size_bytes>
 struct WordManager {
     static constexpr size_t num_words = Common::DivCeil(size_bytes, BYTES_PER_WORD);
 
-    /// Fork mkw60 (sync skip): changes whenever pages of this manager become CPU-modified. Values
-    /// are unique across managers (one global source), so a remembered value never matches a
-    /// different or recreated manager.
+    /// Fork mkw60 (sync skip): per word (64 pages, 256 KiB), a value that changes whenever pages of
+    /// the word become CPU-modified. Values come from one global, increasing source: unique across
+    /// managers, and the largest value over a range grows with every change inside it.
     static inline std::atomic<u64> nx2_epoch_source{0};
-    u64 nx2_cpu_epoch = nx2_epoch_source.fetch_add(1, std::memory_order_relaxed) + 1;
-    void Nx2BumpCpuEpoch() noexcept {
-        nx2_cpu_epoch = nx2_epoch_source.fetch_add(1, std::memory_order_relaxed) + 1;
+    static u64 Nx2NextEpoch() noexcept {
+        return nx2_epoch_source.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+    std::array<u64, num_words> nx2_word_epochs = [] {
+        std::array<u64, num_words> epochs{};
+        epochs.fill(Nx2NextEpoch());
+        return epochs;
+    }();
+    /// Largest epoch of the words holding [offset, offset + size) (offset from cpu_addr).
+    [[nodiscard]] u64 Nx2CpuEpoch(u64 offset, u64 size) const noexcept {
+        if (size == 0 || offset + size > size_bytes) {
+            return 0;
+        }
+        const size_t first = offset / BYTES_PER_WORD;
+        const size_t last = (std::min<size_t>)((offset + size - 1) / BYTES_PER_WORD, num_words - 1);
+        u64 epoch = 0;
+        for (size_t word = first; word <= last; ++word) {
+            epoch = (std::max)(epoch, nx2_word_epochs[word]);
+        }
+        return epoch;
     }
 
     explicit WordManager(VAddr cpu_addr_, DeviceTracker& tracker_) : tracker{&tracker_}, cpu_addr{cpu_addr_} {
@@ -130,10 +148,11 @@ struct WordManager {
         [[maybe_unused]] std::span<u64> untracked_words = Span(Type::Untracked);
         [[maybe_unused]] std::span<u64> cached_words = Span(Type::CachedCPU);
         std::vector<std::pair<VAddr, u64>> ranges;
-        if (type == Type::CPU && enable) {
-            Nx2BumpCpuEpoch();
-        }
+        const u64 nx2_epoch = type == Type::CPU && enable ? Nx2NextEpoch() : 0;
         IterateWords(dirty_addr - cpu_addr, size, [&](size_t index, u64 mask) {
+            if (nx2_epoch != 0) {
+                nx2_word_epochs[index] = nx2_epoch;
+            }
             if (type == Type::CPU || type == Type::CachedCPU) {
                 CollectChangedRanges(!enable, index, untracked_words[index], mask, ranges);
             }
@@ -266,9 +285,12 @@ struct WordManager {
         auto const untracked_words = Span(Type::Untracked);
         auto const cpu_words = Span(Type::CPU);
         std::vector<std::pair<VAddr, u64>> ranges;
-        Nx2BumpCpuEpoch();
+        const u64 nx2_epoch = Nx2NextEpoch();
         for (u64 word_index = 0; word_index < num_words; ++word_index) {
             const u64 cached_bits = cached_words[word_index];
+            if (cached_bits != 0) {
+                nx2_word_epochs[word_index] = nx2_epoch;
+            }
             CollectChangedRanges(false, word_index, untracked_words[word_index], cached_bits, ranges);
             untracked_words[word_index] |= cached_bits;
             cpu_words[word_index] |= cached_bits;

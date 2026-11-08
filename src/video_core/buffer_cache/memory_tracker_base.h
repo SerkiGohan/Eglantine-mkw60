@@ -60,7 +60,7 @@ public:
         if (first != last || first >= top_tier.size() || top_tier[first] == nullptr) {
             return 0;
         }
-        return top_tier[first]->nx2_cpu_epoch;
+        return top_tier[first]->Nx2CpuEpoch(cpu_address & HIGHER_PAGE_MASK, size);
     }
 
     /// Returns true if a region has been modified from the CPU
