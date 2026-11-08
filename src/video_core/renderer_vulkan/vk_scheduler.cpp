@@ -650,19 +650,20 @@ void Nx2ReportBlocks() {
     std::ranges::sort(top, [](const auto& a, const auto& b) { return a.second > b.second; });
     std::string text;
     for (size_t i = 0; i < top.size() && i < 6; ++i) {
+        // "... [with T = Record(...) [with T = Recorder::Function(args)::<lambda(...)>]...]":
+        // the innermost type names the recording function; keep its name without arguments.
         std::string name = top[i].first;
-        if (const size_t at = name.find("T = "); at != std::string::npos) {
-            name = name.substr(at + 4);
+        if (const size_t at = name.rfind("[with T = "); at != std::string::npos) {
+            name = name.substr(at + 10);
         }
-        // Keep the recording function: the part after "Record<" / before "::{lambda".
-        if (const size_t at = name.find("Record<"); at != std::string::npos) {
-            name = name.substr(at + 7);
-        }
-        if (const size_t at = name.find("::{lambda"); at != std::string::npos) {
+        if (const size_t at = name.find("::<lambda"); at != std::string::npos) {
             name.resize(at);
         }
-        if (name.size() > 90) {
-            name = name.substr(name.size() - 90);
+        if (const size_t at = name.find('('); at != std::string::npos) {
+            name.resize(at);
+        }
+        if (name.size() > 70) {
+            name = name.substr(name.size() - 70);
         }
         text += fmt::format(" | {:.0f}/s {}", static_cast<double>(top[i].second) / seconds, name);
     }
