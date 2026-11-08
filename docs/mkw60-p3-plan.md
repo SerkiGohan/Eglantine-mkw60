@@ -125,3 +125,13 @@ Every step has a switch, can be tested on its own and has no effect without the 
 - Replayed ~220–260 registers per job (every 4th draw) → ~55–65 registers per draw in the race (B1 measured ~19 on Mario Bros. Circuit).
   For P3 that means ~5 million register writes/s per preparer – cheap compared with the 14 KB copy (~1.2 GB/s on every draw).
 - **S1 done.** Next step: S2 (upload decision in advance).
+
+## Result of S2 (8.11.2026 ~17:05, fork `dad492bea6`, race, `EDEN_NX2_PREP_SPLIT=1 EDEN_NX2_PREP_PRECHECK=1` + all B2 switches, no shadow)
+
+- Image normal (user). 32 windows of 10 s each (~22.6 million checked draws), up to ~96,000 draws/s.
+- **Advance verdict = actual behaviour in every window:** heavy 0.30–1.07 % (vertex buffer uploads ~100–620/s, SSBO ~35–100/s,
+  index 0–6/s, new buffers 0–4/s), **MISSED 0**, **needlessly heavy 0**, special draws and texel 0.
+- Cost 223–274 ns/draw ≈ **12–21 ms/s** wall clock (incl. two clock reads). Decision point after S2 met: cheaper than
+  `SynchronizeBuffer` in the preparation (~36 ms/s), which can be dropped for clean draws in P3. Possible later: pass the ranges computed
+  in the check on to the preparation (save the duplicate `GpuToCpuAddress`).
+- **S2 done.** Next step: S3 (the preparation records into its own command list, placeholder in the scheduler stream).
