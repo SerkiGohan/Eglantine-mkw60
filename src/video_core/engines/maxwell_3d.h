@@ -16,6 +16,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "video_core/engines/nx2_reg_log.h"
 #include "common/assert.h"
 #include "common/bit_field.h"
 #include "common/common_funcs.h"
@@ -3224,6 +3225,9 @@ public:
     void Nx2SyncReplica();
     std::array<u64, Regs::NUM_REGS / 64> nx2_changed{};
     std::unique_ptr<Regs> nx2_replica;
+    /// P3 S1 (EDEN_NX2_PREP_REGLOG): every register copied into the replica, in order, for
+    /// preparers on other threads (engines/nx2_reg_log.h).
+    Nx2RegLog::Log<Regs> nx2_reg_log;
     std::unique_ptr<Regs> nx2_previous_draw; ///< mode 4: the registers of the previous draw
     std::unique_ptr<Regs> nx2_saved_live;    ///< mode 4: the live registers during a draw
 

@@ -423,9 +423,13 @@ void Maxwell3D::Nx2SyncReplica() {
         std::chrono::steady_clock::time_point last{};
     };
     static thread_local Stats stats;
+    const bool reg_log = Nx2RegLog::Mode() != 0; // P3 S1: log every copied register
     if (!nx2_replica) {
         nx2_replica = std::make_unique<Regs>(regs);
         nx2_changed.fill(0);
+        if (reg_log) {
+            nx2_reg_log.Publish(*nx2_replica); // first baseline
+        }
         return;
     }
     u64 changed = 0;
@@ -433,6 +437,9 @@ void Maxwell3D::Nx2SyncReplica() {
         for (u64 bits = std::exchange(nx2_changed[word], u64{0}); bits != 0; bits &= bits - 1) {
             const size_t index = word * 64 + static_cast<size_t>(std::countr_zero(bits));
             nx2_replica->reg_array[index] = regs.reg_array[index];
+            if (reg_log) [[unlikely]] {
+                nx2_reg_log.Append(static_cast<u32>(index), regs.reg_array[index]);
+            }
             ++changed;
         }
     }
@@ -446,9 +453,15 @@ void Maxwell3D::Nx2SyncReplica() {
                 ++stats.mismatch_regs;
                 ++stats.missed[static_cast<u32>(index)];
                 nx2_replica->reg_array[index] = regs.reg_array[index];
+                if (reg_log) [[unlikely]] {
+                    nx2_reg_log.Append(static_cast<u32>(index), regs.reg_array[index]);
+                }
             }
         }
         stats.mismatch_draws += mismatch ? 1 : 0;
+    }
+    if (reg_log) [[unlikely]] {
+        nx2_reg_log.Publish(*nx2_replica);
     }
     const auto now = std::chrono::steady_clock::now();
     if (stats.last.time_since_epoch().count() == 0) {

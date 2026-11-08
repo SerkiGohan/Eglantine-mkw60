@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <unordered_map>
 #include <algorithm>
 #include <chrono>
 #include <shared_mutex>
@@ -490,7 +491,11 @@ constexpr size_t NX2_SHADOW_ENTRIES = 512;
 
 struct Nx2ShadowJob {
     std::function<void(Nx2ShadowJob&)> run;
-    std::unique_ptr<Tegra::Engines::Maxwell3D::Regs> regs;
+    std::unique_ptr<Tegra::Engines::Maxwell3D::Regs> regs; ///< full copy (without the P3 S1 log)
+    /// P3 S1 (EDEN_NX2_PREP_REGLOG): the registers come from the log up to `reg_pos` instead.
+    Tegra::Engines::Nx2RegLog::Log<Tegra::Engines::Maxwell3D::Regs>* reg_log{};
+    u64 reg_pos{};
+    const Tegra::Engines::Maxwell3D::Regs* regs_view{}; ///< the registers the shadow used
     Tegra::Engines::Maxwell3D::DrawManager::State draw_state;
     Tegra::Engines::Maxwell3D::DirtyState::Flags dirty;
     VideoCommon::GraphicsBindings bindings;          ///< inputs when the preparation starts
@@ -517,6 +522,8 @@ bool Nx2ShadowLocked() {
 
 struct Nx2ShadowStats {
     u64 jobs{}, aborted{}, stale{}, compared{}, count_mismatch{}, entry_mismatch{}, binding_mismatch{};
+    u64 reglog_jobs{}, reglog_skipped{}, reglog_mismatch{}, reglog_replayed{}, reglog_baselines{};
+    u32 reglog_details{};
     u32 details{};
     s64 last_report{};
 };
@@ -617,7 +624,7 @@ void Nx2ShadowCompare(Nx2ShadowJob& job, const DescriptorUpdateEntry* entries, s
         const auto& want = job.expected_bindings;
         bool bindings_equal = !job.is_indexed || Nx2SameBinding(got.index_buffer, want.index_buffer);
         for (size_t i = 0; i < got.vertex_buffers.size() && bindings_equal; ++i) {
-            if (job.regs->vertex_streams[i].enable != 0 &&
+            if (job.regs_view->vertex_streams[i].enable != 0 &&
                 !Nx2SameBinding(got.vertex_buffers[i], want.vertex_buffers[i])) {
                 bindings_equal = false;
                 detail += fmt::format(" vertex buffer {}", i);
@@ -672,6 +679,17 @@ void Nx2ShadowCompare(Nx2ShadowJob& job, const DescriptorUpdateEntry* entries, s
              static_cast<double>(stats.aborted) / seconds,
              static_cast<double>(stats.compared) / seconds, stats.count_mismatch,
              stats.entry_mismatch, stats.binding_mismatch);
+    if (Tegra::Engines::Nx2RegLog::Mode() != 0) {
+        LOG_INFO(Render_Vulkan,
+                 "Prep reglog (mode {}): jobs {:.0f}/s, skipped {} | replayed {:.1f} "
+                 "registers/job, base copies {} | mismatches with the full copy {}",
+                 Tegra::Engines::Nx2RegLog::Mode(), static_cast<double>(stats.reglog_jobs) / seconds,
+                 stats.reglog_skipped,
+                 stats.reglog_jobs ? static_cast<double>(stats.reglog_replayed) /
+                                         static_cast<double>(stats.reglog_jobs)
+                                   : 0.0,
+                 stats.reglog_baselines, stats.reglog_mismatch);
+    }
     stats = {};
     stats.last_report = now;
 }
@@ -889,7 +907,15 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                 regs.transform_feedback_enabled == 0 && !buffer_cache.Nx2IsDrawIndirect() &&
                 num_descriptor_entries <= NX2_SHADOW_ENTRIES) {
                 shadow_job = std::make_unique<Nx2ShadowJob>();
-                shadow_job->regs = std::make_unique<Tegra::Engines::Maxwell3D::Regs>(regs);
+                // P3 S1: registers from the log (1) or the log and a full copy to compare (2).
+                const u32 reg_log_mode = Tegra::Engines::Nx2RegLog::Mode();
+                if (reg_log_mode != 0 && maxwell3d->nx2_replica) {
+                    shadow_job->reg_log = &maxwell3d->nx2_reg_log;
+                    shadow_job->reg_pos = maxwell3d->nx2_reg_log.Position();
+                }
+                if (reg_log_mode != 1 || shadow_job->reg_log == nullptr) {
+                    shadow_job->regs = std::make_unique<Tegra::Engines::Maxwell3D::Regs>(regs);
+                }
                 shadow_job->draw_state = draw_state;
                 shadow_job->dirty = maxwell3d->DrawDirty();
                 shadow_job->bindings = buffer_cache.Nx2Bindings();
@@ -1115,6 +1141,45 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             std::array<DescriptorUpdateEntry, NX2_SHADOW_ENTRIES> entries;
             size_t count = 0;
             bool needs_serial = false;
+            // P3 S1: this thread's own register replica, replayed from the log to the job's draw.
+            const Maxwell3DEngine::Regs* draw_regs = job.regs.get();
+            if (job.reg_log != nullptr) {
+                using ReplicaT = Tegra::Engines::Nx2RegLog::Replica<Maxwell3DEngine::Regs>;
+                thread_local std::unordered_map<const void*, ReplicaT> replicas;
+                ReplicaT& replica = replicas[job.reg_log];
+                auto& stats = Nx2ShadowWorker::Get().stats;
+                const u64 replayed_before = replica.replayed;
+                const u64 baselines_before = replica.baselines;
+                const auto result = replica.CatchUp(*job.reg_log, job.reg_pos);
+                stats.reglog_replayed += replica.replayed - replayed_before;
+                stats.reglog_baselines += replica.baselines - baselines_before;
+                if (result != ReplicaT::Result::Ready) {
+                    ++stats.reglog_skipped;
+                    return;
+                }
+                ++stats.reglog_jobs;
+                if (job.regs) {
+                    // Mode 2: the replayed registers must equal the full copy.
+                    const auto& got = replica.Get().reg_array;
+                    const auto& want = job.regs->reg_array;
+                    if (std::memcmp(got.data(), want.data(), sizeof(want)) != 0) {
+                        ++stats.reglog_mismatch;
+                        if (stats.reglog_details < 8) {
+                            ++stats.reglog_details;
+                            for (size_t index = 0; index < want.size(); ++index) {
+                                if (got[index] != want[index]) {
+                                    LOG_WARNING(Render_Vulkan,
+                                                "Prep reglog mismatch: register {:#x} is {:#x} instead of {:#x}",
+                                                index, got[index], want[index]);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                draw_regs = &replica.Get();
+            }
+            job.regs_view = draw_regs;
             {
                 // P2b: shared preparer lock (structural changes wait), or the old cache locks.
                 const bool locked = Nx2ShadowLocked();
@@ -1134,7 +1199,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                     }
                 }
                 Common::Nx2PrepLock::t_reader = true;
-                Maxwell3DEngine::t_draw_regs = job.regs.get();
+                Maxwell3DEngine::t_draw_regs = draw_regs;
                 Maxwell3DEngine::t_draw_dirty = &job.dirty;
                 Maxwell3DEngine::t_draw_state = &job.draw_state;
                 BufferCache::t_gfx_override = &job.bindings;
