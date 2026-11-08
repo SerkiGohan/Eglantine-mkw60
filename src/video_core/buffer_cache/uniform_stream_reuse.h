@@ -13,6 +13,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#if defined(__x86_64__) || defined(_M_X64)
+#include <x86intrin.h>
+#endif
 #include "common/common_types.h"
 #include "common/logging.h"
 
@@ -92,8 +96,52 @@ inline void ResetUniformStreamReuse() noexcept {
 /// Fork mkw60 (measurement only, EDEN_NX2_UBO_PROBE=1): how often the reuse check pays off.
 /// One "UBO probe" line every ~10 s: binds, bytes, same bytes in the same command buffer
 /// (rebound), same bytes but a new command buffer, different bytes; size classes.
+/// Fork mkw60: compare and copy straight from guest memory instead of through a scratch copy
+/// (one copy less per bind). Start value EDEN_NX2_UBO_DIRECT (default 0 for now), at run time
+/// /tmp/eden_ubo_direct (0/1, read every ~250 ms; knob_sweep.py ubo_direct).
+inline std::atomic<u32> g_ubo_direct{[] {
+    const char* const value = std::getenv("EDEN_NX2_UBO_DIRECT");
+    return value != nullptr && value[0] == '1' ? 1U : 0U;
+}()};
+
+[[nodiscard]] inline u32 UboDirect() noexcept {
+    static std::atomic<u64> calls{0};
+    static std::atomic<s64> last_check{0};
+    if ((calls.fetch_add(1, std::memory_order_relaxed) & 4095) == 0) [[unlikely]] {
+        const s64 now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+        if (now - last_check.load(std::memory_order_relaxed) >= 250) {
+            last_check.store(now, std::memory_order_relaxed);
+            if (std::FILE* file = std::fopen("/tmp/eden_ubo_direct", "r")) {
+                int value = 0;
+                if (std::fscanf(file, "%d", &value) == 1) {
+                    const u32 next = value == 1 ? 1U : 0U;
+                    if (g_ubo_direct.exchange(next, std::memory_order_relaxed) != next) {
+                        LOG_INFO(HW_GPU, "UBO direct: {}", next);
+                    }
+                }
+                std::fclose(file);
+            }
+        }
+    }
+    return g_ubo_direct.load(std::memory_order_relaxed);
+}
+
+[[nodiscard]] inline u64 UboTicks() noexcept {
+#if defined(__x86_64__) || defined(_M_X64)
+    return __rdtsc();
+#else
+    return static_cast<u64>(std::chrono::steady_clock::now().time_since_epoch().count());
+#endif
+}
+
 struct UboProbe {
     u64 binds{}, bytes{}, rebound{}, same_other_tick{}, changed{}, first{};
+    std::array<u64, 2> mode_binds{}; ///< per UboDirect()
+    std::array<u64, 2> mode_ticks{};
+    u64 window_ticks{};
+    u64 direct_fallbacks{};           ///< not contiguous in host memory
     std::array<u64, 5> size_classes{}; ///< <=64, <=256, <=1024, <=4096, >4096 (not here)
     s64 last_report{};
 };
@@ -106,8 +154,13 @@ struct UboProbe {
     return enabled;
 }
 
-inline void UboProbeNote(u32 size, int outcome) {
+inline UboProbe& UboProbeState() noexcept {
     static UboProbe probe;
+    return probe;
+}
+
+inline void UboProbeNote(u32 size, int outcome) {
+    UboProbe& probe = UboProbeState();
     ++probe.binds;
     probe.bytes += size;
     probe.size_classes[size <= 64 ? 0 : size <= 256 ? 1 : size <= 1024 ? 2 : 3]++;
@@ -126,12 +179,25 @@ inline void UboProbeNote(u32 size, int outcome) {
     if (probe.last_report == 0) {
         probe = {};
         probe.last_report = now;
+        probe.window_ticks = UboTicks();
         return;
     }
     if (now - probe.last_report < 10'000) {
         return;
     }
     const double seconds = static_cast<double>(now - probe.last_report) / 1000.0;
+    const double ns_per_tick =
+        seconds * 1e9 / static_cast<double>(UboTicks() - probe.window_ticks);
+    for (u32 mode = 0; mode < 2; ++mode) {
+        if (probe.mode_binds[mode] != 0) {
+            LOG_INFO(HW_GPU, "UBO probe direct={}: {} binds, {:.0f} ns per bind{}", mode,
+                     probe.mode_binds[mode],
+                     static_cast<double>(probe.mode_ticks[mode]) * ns_per_tick /
+                         static_cast<double>(probe.mode_binds[mode]),
+                     mode == 1 ? fmt::format(" (not contiguous: {})", probe.direct_fallbacks)
+                               : std::string{});
+        }
+    }
     const double binds = static_cast<double>(probe.binds);
     LOG_INFO(HW_GPU,
              "UBO probe: Binds {:.0f}/s, {:.1f} MiB/s ({:.0f} bytes per bind) | same + same "
@@ -149,6 +215,7 @@ inline void UboProbeNote(u32 size, int outcome) {
              100.0 * static_cast<double>(probe.size_classes[3]) / binds);
     probe = {};
     probe.last_report = now;
+    probe.window_ticks = UboTicks();
 }
 
 template <class Runtime, class DeviceMemory>
@@ -160,30 +227,52 @@ template <class Runtime, class DeviceMemory>
         index >= Reuse::NumSlots) {
         return false;
     }
+    const bool probe = UboProbeEnabled();
+    const u64 start = probe ? UboTicks() : 0;
     Reuse& reuse = UniformStreamReuseState<typename Runtime::StreamUniformRef>();
     typename Reuse::Slot& slot = reuse.slots[stage][index];
-    u8* const scratch = reuse.scratch.data();
-    device_memory.ReadBlockUnsafe(device_addr, scratch, size);
+    const u32 direct = UboDirect();
 
-    const bool same_bytes =
-        slot.size == size && std::memcmp(slot.bytes.data(), scratch, size) == 0;
-    if (UboProbeEnabled()) [[unlikely]] {
+    // Direct: read the guest bytes where they are, if they are contiguous in host memory.
+    const u8* source = nullptr;
+    if (direct != 0) {
+        const u8* const first = device_memory.template GetPointer<u8>(device_addr);
+        const u8* const last = device_memory.template GetPointer<u8>(device_addr + size - 1);
+        if (first != nullptr && last == first + (size - 1)) {
+            source = first;
+        } else if (probe) [[unlikely]] {
+            ++UboProbeState().direct_fallbacks;
+        }
+    }
+    if (source == nullptr) {
+        u8* const scratch = reuse.scratch.data();
+        device_memory.ReadBlockUnsafe(device_addr, scratch, size);
+        source = scratch;
+    }
+    const bool same_bytes = slot.size == size && std::memcmp(slot.bytes.data(), source, size) == 0;
+    if (probe) [[unlikely]] {
         const int outcome = same_bytes ? (slot.tick == runtime.CurrentTick() ? 0 : 1)
                                        : (slot.size == 0 ? 3 : 2);
         UboProbeNote(size, outcome);
     }
     if (same_bytes && slot.tick == runtime.CurrentTick()) {
         runtime.RebindStreamUniform(slot.ref, size);
-        return true;
+    } else {
+        if (!same_bytes) {
+            // The slot keeps a consistent copy (the guest may be written meanwhile); the stream
+            // allocation gets exactly these bytes.
+            slot.size = size;
+            std::memcpy(slot.bytes.data(), source, size);
+        }
+        const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
+        std::memcpy(span.data(), slot.bytes.data(), size);
+        slot.ref = runtime.LastStreamUniformRef();
+        slot.tick = runtime.CurrentTick();
     }
-    const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
-    std::memcpy(span.data(), scratch, size);
-    slot.ref = runtime.LastStreamUniformRef();
-    // After the allocation: the tick the stream region is tagged with is the one current now.
-    slot.tick = runtime.CurrentTick();
-    if (!same_bytes) {
-        slot.size = size;
-        std::memcpy(slot.bytes.data(), scratch, size);
+    if (probe) [[unlikely]] {
+        UboProbe& state = UboProbeState();
+        ++state.mode_binds[direct];
+        state.mode_ticks[direct] += UboTicks() - start;
     }
     return true;
 }
