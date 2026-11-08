@@ -116,3 +116,12 @@ Every step has a switch, can be tested on its own and has no effect without the 
   and detect SSBO uploads (rare) as heavy through the counter.
 - **After S3:** how many ms/s remain at the back when the preparation is taken out (switch: run the preparation in the placeholder itself on
   the worker = free upper bound for S4)? Below ~40 ms/s CPU → S4 is not worth it.
+
+## Result of S1 (8.11.2026 ~16:45, fork `f2fa9f310e`, race, `EDEN_NX2_PREP_REGLOG=2` + all P2b switches, `PREP_SHADOW=4`)
+
+- Image normal (user). The shadow reader reads the registers only from its replayed replica.
+- 15 windows of 10 s each, ~13,000–16,700 jobs/s: **mismatches with the full copy 0**, skipped 0, no new base copy after the first,
+  prep shadow still 0 mismatches (count, entries, bindings), serial needed 0.
+- Replayed ~220–260 registers per job (every 4th draw) → ~55–65 registers per draw in the race (B1 measured ~19 on Mario Bros. Circuit).
+  For P3 that means ~5 million register writes/s per preparer – cheap compared with the 14 KB copy (~1.2 GB/s on every draw).
+- **S1 done.** Next step: S2 (upload decision in advance).
