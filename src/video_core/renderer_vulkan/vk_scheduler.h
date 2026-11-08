@@ -173,7 +173,8 @@ public:
             return;
         }
         if (t_nx2_paused_block) [[unlikely]] {
-            Nx2CompletePaused(); // anything in the main stream ends the paused block
+            // Anything in the main stream ends the paused block (reason: the command's type).
+            Nx2CompletePaused(Nx2TypeName<T>());
         }
         Common::Nx2CacheGuard::Note(Common::Nx2CacheGuard::SchedulerRecord); // B2 cache guard
         if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
@@ -390,7 +391,13 @@ private:
     void Nx2RecordInBlock(T& command);
     std::unique_ptr<CommandChunk> Nx2TakeChunk();
     void Nx2BeginNewBlock();
-    void Nx2CompletePaused();
+    /// Readable type name without RTTI (the build uses -fno-rtti): "... [with T = <type>]".
+    template <typename T>
+    static const char* Nx2TypeName() noexcept {
+        return __PRETTY_FUNCTION__;
+    }
+    /// `reason`: what ended the block (statistics; a type name or a fixed text).
+    void Nx2CompletePaused(const char* reason = "end");
     /// P3 S3b: command stream state of a context (main stream or block), swapped on enter/pause.
     struct Nx2Context;
     void Nx2SaveContext(Nx2Context& context) const;

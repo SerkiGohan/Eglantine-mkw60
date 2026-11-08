@@ -4,6 +4,10 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <unordered_map>
+#include <vector>
+#include <algorithm>
+#include <string>
 #include <chrono>
 #include <cstdlib>
 #include <memory>
@@ -35,6 +39,7 @@ namespace {
 /// P3 S3 statistics (back thread; worker waits counted atomically).
 struct Nx2BlockStats {
     u64 blocks{}, draws{}, early{}, main_fresh{};
+    std::unordered_map<const char*, u64> reasons; ///< what ended the blocks
     std::atomic<u64> worker_waits{};
     s64 last_report{};
 };
@@ -640,6 +645,29 @@ void Nx2ReportBlocks() {
              static_cast<double>(stats.early) / seconds,
              static_cast<double>(stats.worker_waits.exchange(0, std::memory_order_relaxed)) / seconds,
              static_cast<double>(stats.main_fresh) / seconds);
+    // What ended the blocks: demangled command types (the recording function is in the name).
+    std::vector<std::pair<const char*, u64>> top(stats.reasons.begin(), stats.reasons.end());
+    std::ranges::sort(top, [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::string text;
+    for (size_t i = 0; i < top.size() && i < 6; ++i) {
+        std::string name = top[i].first;
+        if (const size_t at = name.find("T = "); at != std::string::npos) {
+            name = name.substr(at + 4);
+        }
+        // Keep the recording function: the part after "Record<" / before "::{lambda".
+        if (const size_t at = name.find("Record<"); at != std::string::npos) {
+            name = name.substr(at + 7);
+        }
+        if (const size_t at = name.find("::{lambda"); at != std::string::npos) {
+            name.resize(at);
+        }
+        if (name.size() > 90) {
+            name = name.substr(name.size() - 90);
+        }
+        text += fmt::format(" | {:.0f}/s {}", static_cast<double>(top[i].second) / seconds, name);
+    }
+    LOG_INFO(Render_Vulkan, "Prep record block end by:{}", text);
+    stats.reasons.clear();
     stats.blocks = stats.draws = stats.early = stats.main_fresh = 0;
     stats.last_report = now;
 }
@@ -732,14 +760,15 @@ void Scheduler::Nx2PauseBlock() {
     t_nx2_paused_block = std::move(t_nx2_block_owner);
     t_nx2_block = nullptr;
     if (t_nx2_block_draws >= t_nx2_block_max) {
-        Nx2CompletePaused();
+        Nx2CompletePaused("full");
     }
 }
 
-void Scheduler::Nx2CompletePaused() {
+void Scheduler::Nx2CompletePaused(const char* reason) {
     if (!t_nx2_paused_block) {
         return;
     }
+    ++g_nx2_block_stats.reasons[reason];
     const auto block = std::move(t_nx2_paused_block);
     block->done.store(true, std::memory_order_release);
     block->done.notify_all();
@@ -749,7 +778,7 @@ void Scheduler::Nx2CompletePaused() {
 
 void Scheduler::Nx2EndBlock() {
     Nx2PauseBlock();
-    Nx2CompletePaused();
+    Nx2CompletePaused("submit/wait");
 }
 
 void Scheduler::Nx2CloseBlockEarly() {
