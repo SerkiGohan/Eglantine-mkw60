@@ -216,3 +216,12 @@ Cost per draw (flush measurement, weighted over all windows with > 20,000 draws)
   than merging alone (after merging there is little left for the fast path).
 - Frame times from the timelines (0: 20.96 ms, 3: 21.85 ms, 1: 22.1, 2: 16.9) vary with the track section more than the expected
   gain (~0.25 ms/frame) – not measurable like this in a race. Window `09-2` was in the finish/lap loop (the game waits 9.3 ms/f).
+
+## Serial chunk "uniform copy" (8.11.2026, Mario Bros. Circuit with ghost, fork `54279eb8c6`, `EDEN_NX2_UBO_PROBE=1`, log `~/mkw-perf/fork/ubo-probe-mario.log`)
+
+- perf (`graph-20261107-200035`): `BindHostGraphicsUniformBuffer` ~90 ms CPU/s, of which ~45 ms/s `memcpy`/`memcmp` in libc and ~13 ms/s
+  `ReadBlockUnsafe` (guest memory → intermediate buffer), ~6 ms/s page checks (`IteratePages`), ~4 ms/s staging ring.
+- **~460,000–550,000 uniform binds/s, ~230–275 MiB/s, ~520 bytes per bind.** Sizes: ≤ 64 B 15 %, ≤ 256 B 39 %, ≤ 1 KiB 25 %, ≤ 4 KiB 20 %.
+- The reuse (`BindSmallUniformReusing`: same bytes in the same command buffer → rebind the old staging copy) **hits 63–66 %**,
+  0.5 % same in another command buffer, 34–37 % changed. So the comparison pays off.
+- Approach "UBO direct": compare and copy directly from guest memory instead of through the intermediate buffer (one copy less per bind).
