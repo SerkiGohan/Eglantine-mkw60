@@ -225,3 +225,11 @@ Cost per draw (flush measurement, weighted over all windows with > 20,000 draws)
 - The reuse (`BindSmallUniformReusing`: same bytes in the same command buffer → rebind the old staging copy) **hits 63–66 %**,
   0.5 % same in another command buffer, 34–37 % changed. So the comparison pays off.
 - Approach "UBO direct": compare and copy directly from guest memory instead of through the intermediate buffer (one copy less per bind).
+- **A/B "UBO direct" (8.11.2026, Mario Bros. Circuit with ghost, fork `1d41f06821`, log `~/mkw-perf/fork/ubo-direct-ab-mario.log`, timelines
+  `~/mkw-perf/traces/ubo_direct-*`):** per bind **~141 ns (old) → ~127 ns (direct)**, always contiguous (no fallback), image ok.
+  ≈ 7 ms/s less (~1 % of the back). Frame times: 1st pass `0 1 0 …` 20.9 vs 23.9 ms, reverse pass `1 0 1 …` 22.2 vs 22.35 ms → the
+  difference in the 1st pass was the track section, not the switch. **Lesson: in a race, always run A/B in the reverse
+  order as well.** Now on by default (`EDEN_NX2_UBO_DIRECT=0` turns it off).
+- Conclusion on the uniform copy: most of it is the copies themselves (~520,000 × ~520 B/s) and the comparison – both needed. More would
+  only be possible with fewer copies overall (e.g. not copying uniforms at all, but binding guest memory directly as a buffer if it does
+  not change until execution – but that is exactly what the CB hazard from B1 step 1 rules out).

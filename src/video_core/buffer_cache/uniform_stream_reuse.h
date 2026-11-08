@@ -97,11 +97,12 @@ inline void ResetUniformStreamReuse() noexcept {
 /// One "UBO probe" line every ~10 s: binds, bytes, same bytes in the same command buffer
 /// (rebound), same bytes but a new command buffer, different bytes; size classes.
 /// Fork mkw60: compare and copy straight from guest memory instead of through a scratch copy
-/// (one copy less per bind). Start value EDEN_NX2_UBO_DIRECT (default 0 for now), at run time
-/// /tmp/eden_ubo_direct (0/1, read every ~250 ms; knob_sweep.py ubo_direct).
+/// (one copy less per bind, ~14 ns less per bind on the Mario circuit, A/B 8.11.2026). Start value
+/// EDEN_NX2_UBO_DIRECT (default 1, 0 = old way), at run time /tmp/eden_ubo_direct (0/1, read every
+/// ~250 ms; knob_sweep.py ubo_direct).
 inline std::atomic<u32> g_ubo_direct{[] {
     const char* const value = std::getenv("EDEN_NX2_UBO_DIRECT");
-    return value != nullptr && value[0] == '1' ? 1U : 0U;
+    return value != nullptr && value[0] == '0' ? 0U : 1U;
 }()};
 
 [[nodiscard]] inline u32 UboDirect() noexcept {
