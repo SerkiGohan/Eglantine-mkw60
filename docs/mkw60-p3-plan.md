@@ -143,3 +143,22 @@ Every step has a switch, can be tested on its own and has no effect without the 
   the block is always done before the worker reaches it).
 - Precheck with quads as heavy: 0.8–1.6 % heavy (of which special draws/quads ~200–235/s), MISSED still 0.
 - This proves: placeholder + block list give the same command order. Scheduler state is still shared → S3b.
+
+## Result of S3b (8.11.2026 ~20:40–21:10, fork `3c521ce83a` … `7b0915e079`)
+
+- Own command stream state per block (pipeline, rescaling, descriptor chunk, StateTracker cache), the main stream is "stale" after a block
+  and only set again when needed; several clean draws per block (`EDEN_NX2_PREP_BLOCK_DRAWS=16`).
+- **Crash in the 1st test** (SIGSEGV in the placeholder, chunk pointer 0x25): the paused block was kept in a scheduler member, and
+  `Scheduler::Wait` (closes open blocks) also runs on the present thread → it closed the back thread's block while the back thread
+  was continuing it. Fix `ee8783ada1`: paused block thread-local. After that ~7 min without a crash.
+- With the B2 test switches (context switch after every draw): image normal, 4–6 draws/block, main stream reset ~60,000×/s (the
+  test mode calls `InvalidateState` on every draw).
+- **Without the B2 test switches** (one context; `DRAW_REPLICA=3 DIRTY_SNAPSHOT DESC_WRITER LRU_DEFER PREP_SPLIT PREP_PRECHECK PREP_RECORD
+  PREP_BLOCK_DRAWS=16`): image normal, ~12,500–13,300 blocks/s, **5.5–6.7 draws/block**, closed early 0, worker waited ~330–410/s,
+  main stream reset ~1,000/s.
+- **What ends blocks** ("Prep record block end by"): `SamplesStreamer::PauseCounter` ~7,200–7,800/s (the occlusion counter is
+  paused between draws), full (16) ~3,700–4,300/s, `BufferCacheRuntime::CopyBuffer` ~550–650/s, submit/wait ~330/s,
+  `BindIndexBuffer` (heavy draws) ~120–290/s, `StartCounter` ~130/s.
+- Idea for larger blocks: do not treat serial commands between draws (pausing/starting counters, copies) as a block end, but put them
+  into the block as the "preamble" of the next draw (block = sequence of draw slots made of preamble + prepared commands). Only worth it
+  once the cost per block boundary can be measured.
