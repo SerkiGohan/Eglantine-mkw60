@@ -135,3 +135,11 @@ Every step has a switch, can be tested on its own and has no effect without the 
   `SynchronizeBuffer` in the preparation (~36 ms/s), which can be dropped for clean draws in P3. Possible later: pass the ranges computed
   in the check on to the preparation (save the duplicate `GpuToCpuAddress`).
 - **S2 done.** Next step: S3 (the preparation records into its own command list, placeholder in the scheduler stream).
+
+## Result of S3a (8.11.2026 ~17:20, fork `e601015ca8`, race, `EDEN_NX2_PREP_RECORD=1` + PRECHECK + SPLIT + B2 switches)
+
+- Image normal (user), no hang, no new errors in the log.
+- 35 windows of 10 s each: blocks 47,000–68,000/s (= all clean draws), **closed early 0**, **worker waited 0** (one thread:
+  the block is always done before the worker reaches it).
+- Precheck with quads as heavy: 0.8–1.6 % heavy (of which special draws/quads ~200–235/s), MISSED still 0.
+- This proves: placeholder + block list give the same command order. Scheduler state is still shared → S3b.
