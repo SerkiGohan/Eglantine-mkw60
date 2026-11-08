@@ -417,13 +417,32 @@ bool Nx2PrepSplit() {
     return enabled;
 }
 
+/// P3 S2 (EDEN_NX2_PREP_PRECHECK=1, with EDEN_NX2_PREP_SPLIT=1): the serial part decides before the
+/// preparation whether the draw is heavy (BufferCache::Nx2PrepPrecheck plus draw kinds that are
+/// always serial). Counted against what the preparation then really did ("Prep precheck").
+bool Nx2PrepPrecheckEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_PREP_PRECHECK");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+/// Precheck verdicts: 0 clean, 1 index, 2 vertex, 3 storage, 4 special draw (transform feedback,
+/// indirect, inline indices), 5 texel/image buffers; NoPrecheck = not checked.
+constexpr u32 NX2_PRECHECK_REASONS = 6;
+constexpr u32 NX2_NO_PRECHECK = ~0U;
+
 struct Nx2PrepSplitStats {
     u64 draws{}, heavy{}, buffer_uploads{}, buffer_creates{}, texture_uploads{}, texture_creates{};
     u64 uniform_entries{};
+    u64 checked{}, missed{}, false_heavy{}, check_ns{};
+    std::array<u64, NX2_PRECHECK_REASONS> verdicts{};
     s64 last_report{};
 };
 
-void Nx2NotePrepSplit(const VideoCommon::Nx2MutationProbe::Counters& before, size_t uniform_entries) {
+void Nx2NotePrepSplit(const VideoCommon::Nx2MutationProbe::Counters& before, size_t uniform_entries,
+                      u32 precheck = NX2_NO_PRECHECK, u64 precheck_ns = 0) {
     static Nx2PrepSplitStats stats;
     const auto& now_counters = VideoCommon::Nx2MutationProbe::t_counters;
     const u64 buffer_uploads = now_counters.buffer_uploads - before.buffer_uploads;
@@ -438,6 +457,16 @@ void Nx2NotePrepSplit(const VideoCommon::Nx2MutationProbe::Counters& before, siz
         stats.buffer_creates += buffer_creates != 0 ? 1 : 0;
         stats.texture_uploads += texture_uploads != 0 ? 1 : 0;
         stats.texture_creates += texture_creates != 0 ? 1 : 0;
+    }
+    if (precheck != NX2_NO_PRECHECK) {
+        const bool really_heavy = buffer_uploads + buffer_creates != 0;
+        ++stats.checked;
+        ++stats.verdicts[precheck];
+        stats.check_ns += precheck_ns;
+        // Clean verdict but the preparation uploaded/created a buffer: must never happen in P3.
+        stats.missed += precheck == 0 && really_heavy ? 1 : 0;
+        // Heavy verdict without need: costs only the serial path for that draw.
+        stats.false_heavy += precheck >= 1 && precheck <= 3 && !really_heavy ? 1 : 0;
     }
     if ((stats.draws & 4095) != 0) {
         return;
@@ -466,6 +495,20 @@ void Nx2NotePrepSplit(const VideoCommon::Nx2MutationProbe::Counters& before, siz
              static_cast<double>(stats.buffer_creates) / seconds,
              static_cast<double>(stats.texture_uploads) / seconds,
              static_cast<double>(stats.texture_creates) / seconds);
+    if (stats.checked != 0) {
+        const double checked = static_cast<double>(stats.checked);
+        const auto per_s = [&](u64 value) { return static_cast<double>(value) / seconds; };
+        LOG_INFO(Render_Vulkan,
+                 "Prep precheck: checked {:.0f}/s, {:.0f} ns/draw ({:.1f} ms/s) | heavy {:.2f} % "
+                 "(index {:.0f}/s, vertex {:.0f}/s, SSBO {:.0f}/s, special draw {:.0f}/s, texel {:.0f}/s) | "
+                 "MISSED {} | needlessly heavy {:.0f}/s",
+                 per_s(stats.checked), static_cast<double>(stats.check_ns) / checked,
+                 static_cast<double>(stats.check_ns) / 1e6 / seconds,
+                 100.0 * static_cast<double>(stats.checked - stats.verdicts[0]) / checked,
+                 per_s(stats.verdicts[1]), per_s(stats.verdicts[2]), per_s(stats.verdicts[3]),
+                 per_s(stats.verdicts[4]), per_s(stats.verdicts[5]), stats.missed,
+                 per_s(stats.false_heavy));
+    }
     stats = {};
     stats.last_report = now;
 }
@@ -869,6 +912,8 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     std::array<u32, 5> split_uniform_begin{};
     std::array<u32, 5> split_uniform_end{};
     VideoCommon::Nx2MutationProbe::Counters split_before{};
+    u32 split_precheck = NX2_NO_PRECHECK;
+    u64 split_precheck_ns = 0;
     std::unique_ptr<Nx2ShadowJob> shadow_job;
     if (prep_split) [[unlikely]] {
         {
@@ -894,6 +939,30 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         }
         (void)guest_descriptor_queue.EndCapture();
         ASSERT(captured <= split_uniform_entries.size());
+        // P3 S2: decide here, before the preparation, whether the draw is heavy.
+        if (Nx2PrepPrecheckEnabled()) [[unlikely]] {
+            const auto check_start = std::chrono::steady_clock::now();
+            const auto& precheck_state = maxwell3d->DrawStateView();
+            u32 verdict = buffer_cache.Nx2PrepPrecheck(is_indexed);
+            if (verdict == 0 && (regs.transform_feedback_enabled != 0 ||
+                                 buffer_cache.Nx2IsDrawIndirect() ||
+                                 !precheck_state.inline_index_draw_indexes.empty())) {
+                verdict = 4;
+            }
+            if constexpr (Spec::has_texture_buffers || Spec::has_image_buffers) {
+                for (size_t stage = 0; stage < 5 && verdict == 0; ++stage) {
+                    if (Spec::enabled_stages[stage] &&
+                        (!stage_infos[stage].texture_buffer_descriptors.empty() ||
+                         !stage_infos[stage].image_buffer_descriptors.empty())) {
+                        verdict = 5;
+                    }
+                }
+            }
+            split_precheck = verdict;
+            split_precheck_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                      std::chrono::steady_clock::now() - check_start)
+                                                      .count());
+        }
         // Preparation from here: what it uploads or creates makes the draw "heavy".
         split_before = VideoCommon::Nx2MutationProbe::t_counters;
         // P2: inputs of the preparation for the shadow preparer.
@@ -1316,7 +1385,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         for (size_t stage = 0; stage < 5; ++stage) {
             uniform_entries += split_uniform_end[stage] - split_uniform_begin[stage];
         }
-        Nx2NotePrepSplit(split_before, uniform_entries);
+        Nx2NotePrepSplit(split_before, uniform_entries, split_precheck, split_precheck_ns);
     }
     if (IsBuilt() && !pipeline) {
         return false;

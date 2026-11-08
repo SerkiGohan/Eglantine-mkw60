@@ -1711,7 +1711,6 @@ void BufferCache<P>::UpdateIndexBuffer() {
     // We have to check for the dirty flags and index count
     // The index count is currently changed without updating the dirty flags
     const auto& draw_state = maxwell3d->DrawStateView();
-    const auto& index_buffer_ref = draw_state.index_buffer;
     auto& flags = maxwell3d->DrawDirty();
     if (!flags[Dirty::IndexBuffer]) {
         return;
@@ -1735,6 +1734,21 @@ void BufferCache<P>::UpdateIndexBuffer() {
         return;
     }
 
+    const auto [device_addr, size] = Nx2IndexRange();
+    if (size == 0) {
+        Gfx().index_buffer = NULL_BINDING;
+        return;
+    }
+    Gfx().index_buffer = Binding{
+        .device_addr = device_addr,
+        .size = size,
+        .buffer_id = FindBuffer(device_addr, size, false),
+    };
+}
+
+template <class P>
+std::pair<DAddr, u32> BufferCache<P>::Nx2IndexRange() {
+    const auto& index_buffer_ref = maxwell3d->DrawStateView().index_buffer;
     const GPUVAddr gpu_addr_begin = index_buffer_ref.StartAddress();
     const GPUVAddr gpu_addr_end = index_buffer_ref.EndAddress();
     const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr_begin);
@@ -1742,14 +1756,78 @@ void BufferCache<P>::UpdateIndexBuffer() {
     const u32 draw_size = (index_buffer_ref.count + index_buffer_ref.first) * u32(index_buffer_ref.FormatSizeInBytes());
     const u32 size = (std::min)(address_size, draw_size);
     if (size == 0 || !device_addr) {
-        Gfx().index_buffer = NULL_BINDING;
-        return;
+        return {0, 0};
     }
-    Gfx().index_buffer = Binding{
-        .device_addr = *device_addr,
-        .size = size,
-        .buffer_id = FindBuffer(*device_addr, size, false),
-    };
+    return {*device_addr, size};
+}
+
+template <class P>
+std::pair<DAddr, u32> BufferCache<P>::Nx2VertexRange(u32 index) {
+    const auto& array = maxwell3d->DrawRegs().vertex_streams[index];
+    const auto& limit = maxwell3d->DrawRegs().vertex_stream_limits[index];
+    const GPUVAddr gpu_addr_begin = array.Address();
+    const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
+    const u64 native_size = native ? maxwell3d->DrawRegs().NativeVertexStreamSize(index) : 0;
+    if (native && array.enable != 0 && native_size > (std::numeric_limits<u32>::max)()) {
+        throw std::runtime_error("Native vertex stream exceeds supported 32-bit buffer size");
+    }
+    const GPUVAddr gpu_addr_end = native ? gpu_addr_begin + native_size : limit.Address() + 1;
+    const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr_begin);
+    const u32 address_size = static_cast<u32>(gpu_addr_end - gpu_addr_begin);
+    u32 size = address_size; // TODO: Analyze stride and number of vertices
+    if (array.enable == 0 || size == 0 || !device_addr) {
+        return {0, 0};
+    }
+    if (!gpu_memory->IsWithinGPUAddressRange(gpu_addr_end) || size >= 64_MiB) {
+        size = static_cast<u32>(gpu_memory->MaxContinuousRange(gpu_addr_begin, size));
+    }
+    return {*device_addr, size};
+}
+
+template <class P>
+bool BufferCache<P>::Nx2RangeNeedsWork(DAddr device_addr, u64 size) {
+    if (device_addr == 0 || size == 0) {
+        return false; // null binding, FindBuffer returns NULL_BUFFER_ID
+    }
+    const u64 page = device_addr >> CACHING_PAGEBITS;
+    if (page >= page_table.size()) {
+        return false; // FindBuffer returns NULL_BUFFER_ID as well
+    }
+    const BufferId buffer_id = page_table[page];
+    if (!buffer_id || !slot_buffers[buffer_id].IsInBounds(device_addr, size)) {
+        return true; // FindBuffer would create (or merge) a buffer
+    }
+    return memory_tracker.IsRegionCpuModified(device_addr, size); // SynchronizeBuffer would upload
+}
+
+template <class P>
+u32 BufferCache<P>::Nx2PrepPrecheck(bool is_indexed) {
+    if (is_indexed && maxwell3d->DrawStateView().inline_index_draw_indexes.empty()) {
+        const auto [device_addr, size] = Nx2IndexRange();
+        if (Nx2RangeNeedsWork(device_addr, size)) {
+            return 1;
+        }
+    }
+    for (u32 index = 0; index < NUM_VERTEX_BUFFERS; ++index) {
+        if (maxwell3d->DrawRegs().vertex_streams[index].enable == 0) {
+            continue;
+        }
+        const auto [device_addr, size] = Nx2VertexRange(index);
+        if (Nx2RangeNeedsWork(device_addr, size)) {
+            return 2;
+        }
+    }
+    for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+        bool needs_work = false;
+        ForEachEnabledBit(Gfx().enabled_storage_buffers[stage], [&](u32 index) {
+            const Binding& binding = Gfx().storage_buffers[stage][index];
+            needs_work = needs_work || Nx2RangeNeedsWork(binding.device_addr, binding.size);
+        });
+        if (needs_work) {
+            return 3;
+        }
+    }
+    return 0;
 }
 
 template <class P>
@@ -1771,29 +1849,15 @@ void BufferCache<P>::UpdateVertexBuffer(u32 index) {
     if (!maxwell3d->DrawDirty()[Dirty::VertexBuffer0 + index]) {
         return;
     }
-    const auto& array = maxwell3d->DrawRegs().vertex_streams[index];
-    const auto& limit = maxwell3d->DrawRegs().vertex_stream_limits[index];
-    const GPUVAddr gpu_addr_begin = array.Address();
-    const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
-    const u64 native_size = native ? maxwell3d->DrawRegs().NativeVertexStreamSize(index) : 0;
-    if (native && array.enable != 0 && native_size > (std::numeric_limits<u32>::max)()) {
-        throw std::runtime_error("Native vertex stream exceeds supported 32-bit buffer size");
-    }
-    const GPUVAddr gpu_addr_end = native ? gpu_addr_begin + native_size : limit.Address() + 1;
-    const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr_begin);
-    const u32 address_size = static_cast<u32>(gpu_addr_end - gpu_addr_begin);
-    u32 size = address_size; // TODO: Analyze stride and number of vertices
-    if (array.enable == 0 || size == 0 || !device_addr) {
+    const auto [device_addr, size] = Nx2VertexRange(index);
+    if (size == 0) {
         Gfx().vertex_buffers[index] = NULL_BINDING;
         UpdateVertexBufferSlot(index, NULL_BINDING);
         return;
     }
-    if (!gpu_memory->IsWithinGPUAddressRange(gpu_addr_end) || size >= 64_MiB) {
-        size = static_cast<u32>(gpu_memory->MaxContinuousRange(gpu_addr_begin, size));
-    }
-    const BufferId buffer_id = FindBuffer(*device_addr, size, false);
+    const BufferId buffer_id = FindBuffer(device_addr, size, false);
     const Binding binding{
-        .device_addr = *device_addr,
+        .device_addr = device_addr,
         .size = size,
         .buffer_id = buffer_id,
     };

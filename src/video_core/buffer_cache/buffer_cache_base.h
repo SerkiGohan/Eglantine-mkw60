@@ -532,6 +532,12 @@ private:
     void UpdateVertexBuffers();
 
     void UpdateVertexBuffer(u32 index);
+    /// P3 S2: the device range of the index buffer / a vertex stream as UpdateIndexBuffer /
+    /// UpdateVertexBuffer bind it (size 0 = null binding); shared by the bind and the precheck.
+    [[nodiscard]] std::pair<DAddr, u32> Nx2IndexRange();
+    [[nodiscard]] std::pair<DAddr, u32> Nx2VertexRange(u32 index);
+    /// P3 S2: true if binding [device_addr, +size) needs a new buffer or an upload.
+    [[nodiscard]] bool Nx2RangeNeedsWork(DAddr device_addr, u64 size);
 
     void UpdateDrawIndirect();
 
@@ -640,6 +646,12 @@ public:
     /// resolves them first) and storage/texel buffers (preparation).
     void Nx2BindStageUniforms(size_t stage);
     void Nx2BindStageBuffersWithoutUniforms(size_t stage);
+
+    /// P3 S2 (EDEN_NX2_PREP_PRECHECK, docs/mkw60-p3-plan.md): read-only check in the serial part
+    /// whether the preparation of this draw would create a buffer or upload CPU-modified pages for
+    /// its index, vertex or storage buffers. Returns 0 when nothing is to do, otherwise the first
+    /// reason (1 index, 2 vertex, 3 storage).
+    [[nodiscard]] u32 Nx2PrepPrecheck(bool is_indexed);
     static u32 Nx2PrepContexts();
     static u32 Nx2PrepBlock();
     /// Called at the start of every draw (RasterizerVulkan::Draw/DrawIndirect); true when the
