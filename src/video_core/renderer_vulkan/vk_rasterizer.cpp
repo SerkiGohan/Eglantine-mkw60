@@ -7,6 +7,7 @@
 #include "common/nx2_cache_guard.h"
 #include "video_core/nx2_flush_probe.h"
 #include "common/lru_cache.h"
+#include <atomic>
 #include <string>
 #include <unordered_map>
 #include <algorithm>
@@ -878,7 +879,48 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
 }
 } // Anonymous namespace
 
+namespace {
+/// Mario Kart World minimap (fork mkw60): the open world minimap is a second 3D view of the world
+/// rendered into its own 448x440 colour target (RT probe, 9.11.2026: 7,000-18,000 draws a second,
+/// ~1.7 ms per frame of back-thread time; FPS roughly halve while it is shown). With
+/// EDEN_NX2_MKW_NO_MINIMAP=1 draws into that target are skipped (the minimap shows only its
+/// background). At run time /tmp/eden_no_minimap (0/1, read every ~250 ms) switches it.
+bool Nx2SkipMinimapDraw(const Tegra::Engines::Maxwell3D::Regs& regs) {
+    static std::atomic<bool> enabled{[] {
+        const char* value = std::getenv("EDEN_NX2_MKW_NO_MINIMAP");
+        return value != nullptr && value[0] == '1';
+    }()};
+    static thread_local u32 calls = 0;
+    static std::atomic<s64> last_check{0};
+    if ((calls++ & 1023) == 0) [[unlikely]] {
+        const s64 now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+        if (now - last_check.load(std::memory_order_relaxed) >= 250) {
+            last_check.store(now, std::memory_order_relaxed);
+            if (std::FILE* file = std::fopen("/tmp/eden_no_minimap", "r")) {
+                int value = 0;
+                if (std::fscanf(file, "%d", &value) == 1) {
+                    const bool next = value == 1;
+                    if (enabled.exchange(next, std::memory_order_relaxed) != next) {
+                        LOG_INFO(Render_Vulkan, "MKW minimap: {}", next ? "off" : "on");
+                    }
+                }
+                std::fclose(file);
+            }
+        }
+    }
+    if (!enabled.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    return regs.rt_control.count != 0 && regs.rt[0].width == 448 && regs.rt[0].height == 440;
+}
+} // namespace
+
 void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
+    if (Nx2SkipMinimapDraw(maxwell3d->DrawRegs())) [[unlikely]] {
+        return; // EDEN_NX2_MKW_NO_MINIMAP
+    }
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
     // B2 step 3: with EDEN_NX2_DIRTY_SNAPSHOT=1 the draw works on a copy of the dirty flags.
     Tegra::Engines::Maxwell3D::Nx2DrawDirtyScope dirty_scope{*maxwell3d};
@@ -1128,6 +1170,9 @@ void RasterizerVulkan::Nx2SwitchPrepContext() {
 }
 
 void RasterizerVulkan::DrawIndirect() {
+    if (Nx2SkipMinimapDraw(maxwell3d->DrawRegs())) [[unlikely]] {
+        return; // EDEN_NX2_MKW_NO_MINIMAP
+    }
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
     // B2 step 3: with EDEN_NX2_DIRTY_SNAPSHOT=1 the draw works on a copy of the dirty flags.
     Tegra::Engines::Maxwell3D::Nx2DrawDirtyScope dirty_scope{*maxwell3d};
