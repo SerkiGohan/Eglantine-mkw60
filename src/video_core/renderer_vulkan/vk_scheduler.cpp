@@ -17,6 +17,7 @@
 
 #include <fmt/format.h>
 
+#include "common/nx2_probes.h"
 #include "common/nx2_wait_stats.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 
@@ -769,7 +770,9 @@ void Scheduler::Nx2CompletePaused(const char* reason) {
     if (!t_nx2_paused_block) {
         return;
     }
-    ++g_nx2_block_stats.reasons[reason];
+    if constexpr (Common::kNx2Probes) {
+        ++g_nx2_block_stats.reasons[reason];
+    }
     const auto block = std::move(t_nx2_paused_block);
     block->done.store(true, std::memory_order_release);
     block->done.notify_all();

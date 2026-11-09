@@ -22,6 +22,7 @@
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "video_core/dirty_flags.h"
+#include "common/nx2_probes.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
@@ -355,12 +356,16 @@ struct Nx2DirtyStats {
 
 void Maxwell3D::Nx2EndDrawDirty() {
     t_draw_dirty = nullptr;
-    static Nx2DirtyStats stats;
     const DirtyState::Flags& start = nx2_dirty_start;
     const DirtyState::Flags& copy = nx2_dirty_copy;
-    const DirtyState::Flags direct = dirty.flags ^ start;
     const DirtyState::Flags cleared = start & ~copy;
     const DirtyState::Flags set = copy & ~start;
+    if constexpr (!Common::kNx2Probes) {
+        dirty.flags = (dirty.flags & ~cleared) | set;
+        return; // the per-flag statistics below cost ~0.9 ms per frame (perf, 9.11.)
+    }
+    static Nx2DirtyStats stats;
+    const DirtyState::Flags direct = dirty.flags ^ start;
     dirty.flags = (dirty.flags & ~cleared) | set;
 
     ++stats.draws;
@@ -462,6 +467,10 @@ void Maxwell3D::Nx2SyncReplica() {
     }
     if (reg_log) [[unlikely]] {
         nx2_reg_log.Publish(*nx2_replica);
+    }
+    // Statistics only with the probes (a clock read per draw) or in the compare mode.
+    if (!Common::kNx2Probes && Nx2ReplicaMode() != 2) {
+        return;
     }
     const auto now = std::chrono::steady_clock::now();
     if (stats.last.time_since_epoch().count() == 0) {

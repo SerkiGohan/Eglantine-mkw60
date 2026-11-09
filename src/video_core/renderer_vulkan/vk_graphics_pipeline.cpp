@@ -25,6 +25,7 @@
 
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 
+#include "common/nx2_probes.h"
 #include "common/bit_field.h"
 #include "common/scope_exit.h"
 #include "common/thread.h"
@@ -963,7 +964,9 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         ASSERT(captured <= split_uniform_entries.size());
         // P3 S2: decide here, before the preparation, whether the draw is heavy.
         if (Nx2PrepPrecheckEnabled()) [[unlikely]] {
-            const auto check_start = std::chrono::steady_clock::now();
+            // The time per check is measured only with the probes (two clock reads per draw).
+            const auto check_start = Common::kNx2Probes ? std::chrono::steady_clock::now()
+                                                        : std::chrono::steady_clock::time_point{};
             const auto& precheck_state = maxwell3d->DrawStateView();
             u32 verdict = buffer_cache.Nx2PrepPrecheck(is_indexed);
             const bool quads = precheck_state.topology == Maxwell::PrimitiveTopology::Quads ||
@@ -983,9 +986,12 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                 }
             }
             split_precheck = verdict;
-            split_precheck_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                                      std::chrono::steady_clock::now() - check_start)
-                                                      .count());
+            if constexpr (Common::kNx2Probes) {
+                split_precheck_ns = static_cast<u64>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - check_start)
+                        .count());
+            }
         }
         // Preparation from here: what it uploads or creates makes the draw "heavy".
         split_before = VideoCommon::Nx2MutationProbe::t_counters;
@@ -1427,7 +1433,9 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         for (size_t stage = 0; stage < 5; ++stage) {
             uniform_entries += split_uniform_end[stage] - split_uniform_begin[stage];
         }
-        Nx2NotePrepSplit(split_before, uniform_entries, split_precheck, split_precheck_ns);
+        if constexpr (Common::kNx2Probes) { // "Prep split" / "Prep precheck" statistics
+            Nx2NotePrepSplit(split_before, uniform_entries, split_precheck, split_precheck_ns);
+        }
     }
     if (IsBuilt() && !pipeline) {
         return false;
