@@ -394,7 +394,11 @@ private:
     /// Readable type name without RTTI (the build uses -fno-rtti): "... [with T = <type>]".
     template <typename T>
     static const char* Nx2TypeName() noexcept {
+#ifdef _MSC_VER
+        return __FUNCSIG__;
+#else
         return __PRETTY_FUNCTION__;
+#endif
     }
     /// `reason`: what ended the block (statistics; a type name or a fixed text).
     void Nx2CompletePaused(const char* reason = "end");
