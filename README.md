@@ -11,6 +11,26 @@ emulated GPU's work is processed on the host CPU.
 Plans, measurements and design notes are in [`docs/`](docs/); start with
 [`docs/mkw60-roadmap.md`](docs/mkw60-roadmap.md).
 
+## Highlight: hide the minimap (≈60 FPS in the open world)
+
+In the open world, the minimap is a **second 3D view of the world** (its own 448×440 render pass, thousands of draws per
+second through the whole emulated GPU chain). With it, frame rates in the open world often drop to ~40 FPS; without it they
+mostly stay at 60.
+
+The game already turns this view off by itself in tunnels. Using the debug server tools added in this fork (memory snapshots,
+a code trace of which guest code runs, a memory/screenshot watcher) and Ghidra, the switch was found: the game keeps
+"minimap view on" in one field of a scene object and sets it at exactly one instruction. A loader patch makes that
+instruction always store 0, so the game drops the view just as in a tunnel – no rendering hack, no frozen image.
+
+- **Setting:** *Graphics → Advanced → "Mario Kart World: hide minimap"* (global or per game; restart the game after
+  changing it).
+- **Environment variable:** `EDEN_NX2_MKW_MINIMAP=0` hides, `=1` shows (wins over the setting).
+- The log says `Mario Kart World: minimap 3D view off (main+0x…)` when it is active. The patch looks for the instruction
+  pattern, not a fixed address, and does nothing unless it finds exactly one match.
+
+Also recommended for playing: `EDEN_NX2_RESNAPSHOT=0` (do not re-read queued command lists after a resumed semaphore
+acquire; −0.6 ms per frame on Peach Stadium, no visual issues seen).
+
 ## Why
 
 Eglantine runs the emulated GPU's command stream on two host threads (the "GPU split"):
@@ -70,6 +90,8 @@ Measuring lesson learned the hard way: a video playing in a browser in the backg
 
 ## Building
 
+Prebuilt AppImage and Windows builds are on the [releases page](../../releases) (built by the repository's CI).
+
 Same dependencies as Eglantine. Release build as used for all measurements:
 
 ```sh
@@ -87,6 +109,9 @@ All are environment variables, read at start. Most exist for testing a single st
 | Variable | Effect |
 |---|---|
 | `EDEN_NX2_MKW_FRAME_MODE=1` / `=2` | Mario Kart World: force 60 / 30 FPS mode (1 is used for measuring) |
+| `EDEN_NX2_MKW_MINIMAP=0` / `=1` | Mario Kart World: hide / show the minimap's 3D view (overrides the setting "hide minimap") |
+| `EDEN_NX2_RESNAPSHOT=0` | upstream switch: no re-read of queued command lists after a resumed acquire (recommended) |
+| `EDEN_NX2_DEBUG_SERVER=127.0.0.1:7777` | upstream debug server; this fork adds the tools `snapshot_memory` (all writable guest memory to disk) and `code_trace` (which guest instructions run in a time window); `EDEN_NX2_DEBUG_WRITE=1` allows `write_memory` |
 | `EDEN_NX2_PENDING_WAKE_US` | front thread waits for a wake-up instead of yield + 1 ms sleep when channels are suspended (default 200, 0 = old behaviour) |
 | `EDEN_NX2_WAIT_STATS=1` | wait statistics every 10 s in the log; with it, `touch /tmp/eden_trace` writes a 5 s Chrome trace to `~/eden-trace-*.json` (open in ui.perfetto.dev) |
 | `EDEN_NX2_FLUSH_OPT` | merge a draw's cache invalidation ranges (default 1) |
