@@ -7,6 +7,8 @@
 #include "common/nx2_cache_guard.h"
 #include "video_core/nx2_flush_probe.h"
 #include "common/lru_cache.h"
+#include <string>
+#include <unordered_map>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -455,8 +457,107 @@ void DiagRecordDraw(Tegra::Engines::Maxwell3D& maxwell3d, Tegra::MemoryManager& 
 }
 } // namespace
 
+namespace {
+/// EDEN_NX2_RT_PROBE=1 (fork mkw60, measurement): draws and back-thread time per render target
+/// (colour target 0 address/size/format, depth target), to find what the Mario Kart World minimap
+/// costs. "RT probe" every ~10 s with the 14 most expensive targets.
+struct Nx2RtKey {
+    u64 color;
+    u64 depth;
+    u32 width;
+    u32 height;
+    u32 format;
+    bool operator==(const Nx2RtKey&) const = default;
+};
+struct Nx2RtKeyHash {
+    size_t operator()(const Nx2RtKey& k) const noexcept {
+        return std::hash<u64>{}(k.color * 31 + k.depth) ^ (size_t{k.width} << 16) ^ k.height;
+    }
+};
+struct Nx2RtStat {
+    u64 draws{};
+    u64 ns{};
+};
+bool Nx2RtProbeEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_RT_PROBE");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+struct Nx2RtProbe {
+    std::unordered_map<Nx2RtKey, Nx2RtStat, Nx2RtKeyHash> targets;
+    u64 draws{}, ns{};
+    s64 last_report{};
+
+    static Nx2RtProbe& Get() {
+        static Nx2RtProbe probe;
+        return probe;
+    }
+    void Note(const Nx2RtKey& key, u64 elapsed_ns) {
+        auto& stat = targets[key];
+        ++stat.draws;
+        stat.ns += elapsed_ns;
+        ++draws;
+        ns += elapsed_ns;
+        if ((draws & 4095) != 0) {
+            return;
+        }
+        const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+        if (last_report == 0) {
+            *this = {};
+            last_report = now;
+            return;
+        }
+        if (now - last_report < 10'000'000'000LL) {
+            return;
+        }
+        const double seconds = static_cast<double>(now - last_report) / 1e9;
+        std::vector<std::pair<Nx2RtKey, Nx2RtStat>> top(targets.begin(), targets.end());
+        std::ranges::sort(top, [](const auto& a, const auto& b) { return a.second.ns > b.second.ns; });
+        std::string text;
+        for (size_t i = 0; i < top.size() && i < 14; ++i) {
+            const auto& [k, v] = top[i];
+            text += fmt::format(" | {}x{} f{} c{:#x} z{:#x}: {:.0f} draws/s {:.1f} ms/s", k.width, k.height,
+                                k.format, k.color, k.depth, static_cast<double>(v.draws) / seconds,
+                                static_cast<double>(v.ns) / 1e6 / seconds);
+        }
+        LOG_INFO(Render_Vulkan, "RT probe: {} targets, {:.0f} draws/s, {:.1f} ms/s{}", targets.size(),
+                 static_cast<double>(draws) / seconds, static_cast<double>(ns) / 1e6 / seconds, text);
+        *this = {};
+        last_report = now;
+    }
+};
+} // namespace
+
 template <typename Func>
 void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+    // EDEN_NX2_RT_PROBE: back-thread time of this draw per render target.
+    const bool nx2_rt_probe = Nx2RtProbeEnabled();
+    Nx2RtKey nx2_rt_key{};
+    std::chrono::steady_clock::time_point nx2_rt_start{};
+    if (nx2_rt_probe) [[unlikely]] {
+        const auto& rt_regs = maxwell3d->DrawRegs();
+        const bool has_color = rt_regs.rt_control.count != 0 && rt_regs.rt[0].Address() != 0;
+        nx2_rt_key = Nx2RtKey{
+            .color = has_color ? rt_regs.rt[0].Address() : 0,
+            .depth = rt_regs.zeta_enable != 0 ? rt_regs.zeta.Address() : 0,
+            .width = has_color ? rt_regs.rt[0].width : rt_regs.zeta_size.width,
+            .height = has_color ? rt_regs.rt[0].height : rt_regs.zeta_size.height,
+            .format = has_color ? static_cast<u32>(rt_regs.rt[0].format) : 0,
+        };
+        nx2_rt_start = std::chrono::steady_clock::now();
+    }
+    SCOPE_EXIT {
+        if (nx2_rt_probe) [[unlikely]] {
+            Nx2RtProbe::Get().Note(
+                nx2_rt_key, static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                 std::chrono::steady_clock::now() - nx2_rt_start)
+                                                 .count()));
+        }
+    };
 
     SCOPE_EXIT {
         gpu.TickWork();
