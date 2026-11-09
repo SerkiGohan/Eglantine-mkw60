@@ -39,10 +39,21 @@ The draw preparation on the back thread is split into
 | B2 | Caches safe for concurrent readers: dirty-flag snapshot, per-preparer binding contexts, descriptor reservation, deferred LRU touches, preparer lock against structural cache changes | done |
 | P1 | `ConfigureImpl` split into snapshot + preparation (one thread) | done, 0.3–0.6 % of draws need the serial fallback |
 | P2 | Shadow preparer on a second thread recomputes the preparation and compares | done, ~3 million comparisons, 0 differences |
-| P3 | Real preparer threads; the back thread no longer waits for them | in progress (S1 of S5 done) |
+| P3 | Real preparer threads; the back thread no longer waits for them | **paused after S3** (see below) |
 
-P3 details: [`docs/mkw60-p3-plan.md`](docs/mkw60-p3-plan.md). Expected gain on the heaviest track (Peach Stadium):
-about 1–1.5 ms per frame. Reaching 60 FPS there will also need cheaper serial work and a faster front thread.
+P3 details: [`docs/mkw60-p3-plan.md`](docs/mkw60-p3-plan.md). S1–S3 work and are tested (register change log, upload
+pre-check, blocks recorded behind a placeholder in the command stream, own command stream state per block). Measured on one
+thread they cost ~1.6 ms per frame, and preparer threads (S4) would take only ~3.3 ms per frame off the back thread, an
+estimated net gain of ~0.5–0.9 ms. That is too little for the effort and risk, so P3 is paused; the code stays behind its
+switches and costs nothing without them.
+
+Instead, profiling single hot instructions (`perf annotate`) found cheaper wins (9.11.2026):
+
+| Change | Gain on the Peach Stadium |
+|---|---|
+| Runtime-switch polling with a thread-local counter instead of a shared atomic in the uniform bind (~520,000 calls/s) | −0.3 ms/frame |
+| Draw takes the cache locks before its invalidation (re-entered cheaply) | −0.1 ms/frame |
+| **GpuSplit: front ring fields and `back_engine` in separate 128-byte blocks (false sharing)** | **−1.5 ms/frame** |
 
 ## Current numbers
 
@@ -51,10 +62,10 @@ position by position:
 
 | Build | Frame time |
 |---|---|
-| B0 (fork before the rework) | 19.3–19.4 ms (~52 FPS) |
-| current `mkw60`, no switches | 19.8–19.9 ms (~50 FPS) |
+| B0 (fork before the rework, 8.11.) | 19.3–19.4 ms (~52 FPS) |
+| `mkw60` after cleaning up (8.11.), no switches | 19.8–20.3 ms (~50 FPS) |
+| **current `mkw60` (9.11.), no switches** | **18.2 ms (~55 FPS)** |
 
-The rework is not active yet without switches; the ~0.5 ms are its base cost until P3 takes work off the back thread.
 Measuring lesson learned the hard way: a video playing in a browser in the background cost ~2 ms per frame.
 
 ## Building
