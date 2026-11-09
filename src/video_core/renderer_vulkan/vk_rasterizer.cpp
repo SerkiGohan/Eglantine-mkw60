@@ -470,6 +470,15 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         }
     };
     namespace Profile = VideoCommon::Nx2Profile;
+    // The draw holds the buffer and texture cache locks (taken below, after FlushWork).
+    std::unique_lock<Common::SpinRecursiveMutex> draw_buffer_lock{buffer_cache.mutex, std::defer_lock};
+    std::unique_lock<Common::SpinRecursiveMutex> draw_texture_lock{texture_cache.mutex, std::defer_lock};
+    struct DrawLock {
+        std::unique_lock<Common::SpinRecursiveMutex>& a;
+        std::unique_lock<Common::SpinRecursiveMutex>& b;
+        void lock() { std::lock(a, b); }
+        bool owns_lock() const { return a.owns_lock(); }
+    } draw_lock{draw_buffer_lock, draw_texture_lock};
     {
         Profile::Scope scope{Profile::Zone::FlushWork};
         namespace FlushProbe = VideoCommon::Nx2FlushProbe;
@@ -485,10 +494,17 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             FlushProbe::NoteDraw();
         } else {
             FlushWork();
+            // Take the draw's cache locks before the invalidation: InnerInvalidation then
+            // re-enters them on the cheap recursive path instead of an atomic exchange per lock
+            // (~0.25 ms per frame on the Peach Stadium, perf 9.11.2026).
+            draw_lock.lock();
             FlushProbe::t_in_draw_flush = true;
             gpu_memory->FlushCaching();
             FlushProbe::t_in_draw_flush = false;
         }
+    }
+    if (!draw_lock.owns_lock()) {
+        draw_lock.lock();
     }
     if (frame_dump.Capturing()) {
         frame_dump.DrainIfFull();
@@ -545,8 +561,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         report_failure(no_mesh ? "EDEN_NX2_NO_MESH" : "no VK_EXT_mesh_shader");
         return;
     }
-    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-    // update engine as channel may be different.
+    // update engine as channel may be different (cache locks held since the invalidation above).
     pipeline->SetEngine(maxwell3d, gpu_memory);
     const u32 repack_dirty = buffer_cache_runtime.SetVertexRepackLayout(
         maxwell3d->DrawRegs(), pipeline->HasDynamicVertexInput());
