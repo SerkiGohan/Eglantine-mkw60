@@ -17,8 +17,7 @@ on:
     paths:
       - VERSION
       - CHANGELOG.md
-  schedule:
-    - cron: "0 3 * * *"
+  # mkw60 fork: no scheduled daily build (it would look for the upstream branch nx2).
   workflow_dispatch:
     inputs:
       kind:
