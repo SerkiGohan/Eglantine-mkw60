@@ -14,7 +14,9 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
-#if defined(__x86_64__) || defined(_M_X64)
+#if defined(_MSC_VER) && defined(_M_X64)
+#include <intrin.h>
+#elif defined(__x86_64__)
 #include <x86intrin.h>
 #endif
 #include "common/common_types.h"

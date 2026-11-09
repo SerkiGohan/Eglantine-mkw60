@@ -16,7 +16,9 @@
 #include "common/common_types.h"
 #include "common/nx2_probes.h"
 #include "common/logging.h"
-#if defined(__x86_64__) || defined(_M_X64)
+#if defined(_MSC_VER) && defined(_M_X64)
+#include <intrin.h>
+#elif defined(__x86_64__)
 #include <x86intrin.h>
 #endif
 

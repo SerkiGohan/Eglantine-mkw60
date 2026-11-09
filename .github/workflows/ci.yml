@@ -28,7 +28,7 @@ on:
       platforms:
         description: Which OS builds to run
         type: choice
-        options: [all, linux, windows, macos]
+        options: [all, linux-windows, linux, windows, macos]
         default: all
       pgo:
         description: Also build the PGO variants
@@ -127,7 +127,7 @@ jobs:
     needs: prepare
     if: >-
       needs.prepare.outputs.skip != 'true' &&
-      (inputs.platforms == '' || inputs.platforms == 'all' || inputs.platforms == 'linux')
+      (inputs.platforms == '' || inputs.platforms == 'all' || inputs.platforms == 'linux-windows' || inputs.platforms == 'linux')
     uses: ./.github/workflows/build-linux.yml
     with:
       sha: ${{ needs.prepare.outputs.sha }}
@@ -143,7 +143,7 @@ jobs:
     needs: prepare
     if: >-
       needs.prepare.outputs.skip != 'true' &&
-      (inputs.platforms == '' || inputs.platforms == 'all' || inputs.platforms == 'windows')
+      (inputs.platforms == '' || inputs.platforms == 'all' || inputs.platforms == 'linux-windows' || inputs.platforms == 'windows')
     uses: ./.github/workflows/build-windows.yml
     with:
       sha: ${{ needs.prepare.outputs.sha }}
