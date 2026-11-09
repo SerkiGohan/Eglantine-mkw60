@@ -11,6 +11,7 @@
 #endif
 #include "common/settings.h"
 #include "core/arm/dynarmic/arm_dynarmic.h"
+#include "core/arm/nx2_code_trace.h"
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
 #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
 #include "core/core_timing.h"
@@ -56,6 +57,9 @@ Dynarmic::A64::Vector DynarmicCallbacks64::MemoryRead128(u64 vaddr) {
 std::optional<u32> DynarmicCallbacks64::MemoryReadCode(u64 vaddr) {
     if (!m_memory.IsValidVirtualAddressRange(vaddr, sizeof(u32)))
         return std::nullopt;
+    if (Core::Nx2CodeTrace::g_active.load(std::memory_order_relaxed)) [[unlikely]] {
+        Core::Nx2CodeTrace::Note(vaddr);
+    }
     auto const aligned_vaddr = vaddr & ~Core::Memory::YUZU_PAGEMASK;
     if (last_code_addr != aligned_vaddr) {
         m_memory.ReadBlock(aligned_vaddr, &cached_code_page, sizeof(cached_code_page));

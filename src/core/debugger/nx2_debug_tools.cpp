@@ -24,7 +24,10 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/stb.h"
+#include "core/arm/arm_interface.h"
+#include "core/arm/nx2_code_trace.h"
 #include "core/core.h"
+#include "core/hardware_properties.h"
 #include "core/debugger/nx2_debug_server.h"
 #include "core/debugger/nx2_debug_tools.h"
 #include "core/frontend/framebuffer_layout.h"
@@ -633,6 +636,69 @@ json SnapshotMemory(ToolState& state, const json& params) {
             {"unmapped_pages", unmapped_pages}};
 }
 
+/// mkw60: which guest code runs. Clears the JIT code cache of all cores, records every
+/// instruction the JIT translates for `seconds`, and writes the runs of consecutive instructions
+/// to <dump dir>/codetrace/<session>-<n>-<label>.txt ("start end" in hex, plus the module text
+/// ranges). Two traces in different game states are compared with codetrace_diff.py.
+json CodeTrace(ToolState& state, const json& params) {
+    Kernel::KProcess& process = Application(state);
+    const double seconds = Param<double>(params, "seconds", 8.0, 0.5, 120.0);
+    std::string label = params.value("label", std::string{"trace"});
+    for (char& c : label) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') {
+            c = '_';
+        }
+    }
+    Nx2CodeTrace::Start();
+    for (size_t i = 0; i < Hardware::NUM_CPU_CORES; ++i) {
+        if (ArmInterface* const arm = process.GetArmInterface(i)) {
+            arm->ClearInstructionCache();
+        }
+    }
+    std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
+    const std::vector<u64> addresses = Nx2CodeTrace::Stop();
+
+    static std::atomic<u64> counter{};
+    const u64 number = ++counter;
+    const std::filesystem::path directory = state.dump_directory / "codetrace";
+    std::filesystem::create_directories(directory);
+    const std::filesystem::path path =
+        directory / fmt::format("{}-{:03}-{}.txt", state.session, number, label);
+    std::ofstream out{path};
+    auto& page_table = process.GetPageTable();
+    for (u64 address = 0; address < GetInteger(page_table.GetAddressSpaceStart()) +
+                                         page_table.GetAddressSpaceSize();) {
+        Kernel::KMemoryInfo info{};
+        Kernel::Svc::PageInfo page_info{};
+        if (page_table.QueryInfo(&info, &page_info, address).IsError()) {
+            break;
+        }
+        const Kernel::Svc::MemoryInfo svc = info.GetSvcMemoryInfo();
+        if (svc.size == 0 || svc.base_address + svc.size <= address) {
+            break;
+        }
+        if (svc.state == Kernel::Svc::MemoryState::Code &&
+            svc.permission == Kernel::Svc::MemoryPermission::ReadExecute) {
+            out << fmt::format("# text {:x} {:x}\n", svc.base_address, svc.base_address + svc.size);
+        }
+        address = svc.base_address + svc.size;
+    }
+    size_t runs = 0;
+    for (size_t i = 0; i < addresses.size();) {
+        size_t j = i;
+        while (j + 1 < addresses.size() && addresses[j + 1] == addresses[j] + 4) {
+            ++j;
+        }
+        out << fmt::format("{:x} {:x}\n", addresses[i], addresses[j] + 4);
+        ++runs;
+        i = j + 1;
+    }
+    out.close();
+    LOG_INFO(Debug, "Code trace {} ({}): {} instructions in {} runs over {:.1f} s -> {}", number,
+             label, addresses.size(), runs, seconds, PathText(path));
+    return {{"file", PathText(path)}, {"instructions", addresses.size()}, {"runs", runs}};
+}
+
 json ReadGpuMemory(ToolState& state, const json& params) {
     if (!IsVulkan()) {
         throw std::runtime_error{"GPU memory reads need the Vulkan renderer"};
@@ -767,6 +833,7 @@ Handlers MakeHandlers(const std::shared_ptr<ToolState>& state) {
         {"read_memory", handler(ReadMemory)},
         {"search_memory", handler(SearchMemory)},
         {"snapshot_memory", handler(SnapshotMemory)},
+        {"code_trace", handler(CodeTrace)},
         {"write_memory", handler(WriteMemory)},
         {"read_gpu_memory", handler(ReadGpuMemory)},
         {"input", waiting(Input)},
