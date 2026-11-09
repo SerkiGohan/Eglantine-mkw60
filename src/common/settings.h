@@ -611,6 +611,10 @@ struct Values {
     SwitchableSetting<bool> mkw_30fps{linkage, false, "mkw_30fps", Category::RendererAdvanced};
     SwitchableSetting<bool> mkw_dynamic_fps{linkage, false, "mkw_dynamic_fps",
                                             Category::RendererAdvanced};
+    // mkw60: Mario Kart World without the minimap's 3D view (loader/nso.cpp); big FPS gain in
+    // the open world. EDEN_NX2_MKW_MINIMAP=0/1 overrides it.
+    SwitchableSetting<bool> mkw_hide_minimap{linkage, false, "mkw_hide_minimap",
+                                             Category::RendererAdvanced};
 
     SwitchableSetting<bool> use_reactive_flushing{linkage,
 #ifdef __ANDROID__

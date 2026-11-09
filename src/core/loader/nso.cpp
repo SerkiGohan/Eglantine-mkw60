@@ -280,7 +280,7 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         }
     }
 
-    // mkw60: EDEN_NX2_MKW_MINIMAP=0 turns off the 3D view of Mario Kart World's minimap (its own
+    // mkw60: setting mkw_hide_minimap / EDEN_NX2_MKW_MINIMAP=0 turns off the 3D view of Mario Kart World's minimap (its own
     // 448x440 render pass; ~2-4 ms per frame in the open world). The game keeps "minimap view on"
     // in a scene object field (+0x424) and sets it at exactly one place, the same one it uses in
     // tunnels (where the minimap is hidden):
@@ -288,8 +288,13 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     // Storing wzr instead makes every request "off"; the game then drops the view as in a tunnel.
     // The round frame of the minimap stays on screen (black).
     if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
+        // Setting "Mario Kart World: hide minimap"; EDEN_NX2_MKW_MINIMAP=0 / =1 overrides it.
         const char* const minimap_env = std::getenv("EDEN_NX2_MKW_MINIMAP");
-        if (minimap_env != nullptr && std::string_view{minimap_env} == "0") {
+        const bool hide_minimap =
+            minimap_env != nullptr && *minimap_env != '\0'
+                ? std::string_view{minimap_env} == "0"
+                : Settings::values.mkw_hide_minimap.GetValue();
+        if (hide_minimap) {
             const auto& text = nso_header.segments[0];
             u8* const code = codeset.memory.data() + module_start + text.location;
             const size_t count = text.size / sizeof(u32);

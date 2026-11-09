@@ -287,6 +287,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Lets the game adjust between 30 and 60 FPS using whole-frame timing to maintain "
               "normal game speed. Takes effect after restarting the game and takes precedence over "
               "the 30 FPS mode."));
+    INSERT(Settings, mkw_hide_minimap, tr("Mario Kart World: hide minimap"),
+           tr("Turns off the minimap's 3D view, like the game does in tunnels. Saves a separate "
+              "render pass every frame (often 60 instead of ~40 FPS in the open world). "
+              "Takes effect after restarting the game."));
     INSERT(Settings, barrier_feedback_loops, tr("Barrier feedback loops"),
            tr("Improves rendering of transparency effects in specific games."));
     INSERT(Settings, enable_buffer_history, tr("Enable buffer history"),
