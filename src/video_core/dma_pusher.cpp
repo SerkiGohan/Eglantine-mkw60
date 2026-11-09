@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
+#include <vector>
+#include <chrono>
 #include <cstdio>
 
 #include "common/scope_exit.h"
@@ -628,18 +631,94 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
     }
 }
 
+namespace {
+/// EDEN_NX2_RESNAPSHOT_PROBE=1 (fork mkw60, measurement): does re-reading the queued command
+/// lists after a resumed acquire ever find different words? "Resnapshot probe" every ~10 s.
+struct ResnapshotProbe {
+    u64 refreshes{}, entries{}, words{}, changed_entries{}, changed_words{};
+    u32 examples{};
+    s64 last_report{};
+};
+bool ResnapshotProbeEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_RESNAPSHOT_PROBE");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+} // namespace
+
 void DmaPusher::RefreshSnapshot(CommandList& list, u64 now) {
     list.snapshot_suspensions = now;
+    const bool probe = ResnapshotProbeEnabled();
+    static ResnapshotProbe stats;
+    static std::vector<u32> fresh;
+    if (probe) [[unlikely]] {
+        ++stats.refreshes;
+    }
     for (size_t i = 0; i < list.command_lists.size() && i < list.submitted_offsets.size(); ++i) {
         const CommandListHeader& entry = list.command_lists[i];
         const u32 offset = list.submitted_offsets[i];
         if (offset + entry.size > list.submitted_words.size()) {
             continue;
         }
+        if (probe) [[unlikely]] {
+            fresh.resize(entry.size);
+            memory_manager.ReadBlockUnsafe(entry.addr, fresh.data(), entry.size * sizeof(u32));
+            u64 changed = 0;
+            u32 first = ~0U;
+            for (u32 w = 0; w < entry.size; ++w) {
+                if (fresh[w] != list.submitted_words[offset + w].argument) {
+                    ++changed;
+                    first = (std::min)(first, w);
+                }
+            }
+            ++stats.entries;
+            stats.words += entry.size;
+            if (changed != 0) {
+                ++stats.changed_entries;
+                stats.changed_words += changed;
+                if (stats.examples < 8) {
+                    ++stats.examples;
+                    LOG_INFO(HW_GPU,
+                             "Resnapshot probe example: list {:#x}, {} words, {} changed from word {} "
+                             "({:#x} -> {:#x})",
+                             entry.addr, entry.size, changed, first,
+                             list.submitted_words[offset + first].argument, fresh[first]);
+                }
+            }
+            std::memcpy(list.submitted_words.data() + offset, fresh.data(), entry.size * sizeof(u32));
+            continue;
+        }
         memory_manager.ReadBlockUnsafe(entry.addr, list.submitted_words.data() + offset,
                                        entry.size * sizeof(u32));
     }
     list.deferred_entries.clear();
+    if (!probe) {
+        return;
+    }
+    const s64 time_now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count();
+    if (stats.last_report == 0) {
+        stats.last_report = time_now;
+        return;
+    }
+    if (time_now - stats.last_report < 10'000'000'000LL) {
+        return;
+    }
+    const double seconds = static_cast<double>(time_now - stats.last_report) / 1e9;
+    LOG_INFO(HW_GPU,
+             "Resnapshot probe: re-reads {:.0f}/s, entries {:.0f}/s, {:.0f} KiB/s | entries changed "
+             "{} ({} words)",
+             static_cast<double>(stats.refreshes) / seconds,
+             static_cast<double>(stats.entries) / seconds,
+             static_cast<double>(stats.words) * 4.0 / 1024.0 / seconds, stats.changed_entries,
+             stats.changed_words);
+    const u32 examples = stats.examples;
+    stats = {};
+    stats.examples = examples;
+    stats.last_report = time_now;
 }
 
 void DmaPusher::RefreshDeferredEntries(CommandList& list) {
