@@ -107,9 +107,11 @@ inline std::atomic<u32> g_ubo_direct{[] {
 }()};
 
 [[nodiscard]] inline u32 UboDirect() noexcept {
-    static std::atomic<u64> calls{0};
+    // Per thread, not atomic: a shared atomic counter here (~520,000 binds a second) was the
+    // single hottest instruction of the uniform bind (perf, 9.11.2026).
+    static thread_local u32 calls = 0;
     static std::atomic<s64> last_check{0};
-    if ((calls.fetch_add(1, std::memory_order_relaxed) & 4095) == 0) [[unlikely]] {
+    if ((calls++ & 4095) == 0) [[unlikely]] {
         const s64 now = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now().time_since_epoch())
                             .count();

@@ -36,9 +36,9 @@ inline std::atomic<u32> g_opt{[] {
 }()};
 
 inline u32 Opt() {
-    static std::atomic<u64> calls{0};
+    static thread_local u32 calls = 0; // per thread: no shared atomic in the draw path
     static std::atomic<s64> last_check{0};
-    if ((calls.fetch_add(1, std::memory_order_relaxed) & 1023) == 0) [[unlikely]] {
+    if ((calls++ & 1023) == 0) [[unlikely]] {
         const s64 now = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now().time_since_epoch())
                             .count();
