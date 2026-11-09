@@ -205,8 +205,11 @@ private:
     bool front_macros{};
     std::unique_ptr<u64[]> ring;
 
-    // Front side.
-    u64 write_position{};
+    // Front side. Own 128-byte block (x86 prefetchers pull 64-byte lines in pairs): back_engine,
+    // which the back writes on every engine switch, sat next to write_position/consumed_cache and
+    // made the front miss the cache on almost every ring write (perf 9.11.2026: ~1.5 ms per frame
+    // at one load in Maxwell3D::FrontWrite).
+    alignas(128) u64 write_position{};
     u64 last_writer_position{};
     u64 published_local{};
     u64 consumed_cache{};
@@ -214,8 +217,8 @@ private:
     size_t publish_every{PublishEvery};
     Tegra::Engines::EngineInterface* front_engine{};
 
-    // Back side.
-    Tegra::Engines::EngineInterface* back_engine{};
+    // Back side (own block, see above).
+    alignas(128) Tegra::Engines::EngineInterface* back_engine{};
 
     /// Whether the back is done with the Vulkan scheduler until it gets more work: set after its
     /// idle hook ran, cleared before it executes entries.
