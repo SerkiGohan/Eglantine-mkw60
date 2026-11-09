@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <bit>
+#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -521,6 +522,117 @@ json SearchMemory(ToolState& state, const json& params) {
     return result;
 }
 
+/// mkw60: writes every user-writable block of the application (heap, module .data/.bss, stacks,
+/// ...) to <dump dir>/memsnap/<session>-<n>-<label>/memory.bin, with index.json listing all
+/// mapped blocks (state, permission, file offset of the dumped ones). Several snapshots taken in
+/// different game states are compared offline (memsnap_diff.py) to find a flag. The game keeps
+/// running while it reads, so a value that changes during the dump can be torn.
+json SnapshotMemory(ToolState& state, const json& params) {
+    Kernel::KProcess& process = Application(state);
+    auto& page_table = process.GetPageTable();
+    Memory::Memory& memory = process.GetMemory();
+    std::string label = params.value("label", std::string{"snap"});
+    for (char& c : label) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') {
+            c = '_';
+        }
+    }
+    static std::atomic<u64> counter{};
+    const u64 number = ++counter;
+    const std::filesystem::path directory =
+        state.dump_directory / "memsnap" / fmt::format("{}-{:03}-{}", state.session, number, label);
+    std::filesystem::create_directories(directory);
+    std::ofstream file{directory / "memory.bin", std::ios::binary};
+    if (!file) {
+        throw std::runtime_error{fmt::format("cannot write {}", PathText(directory))};
+    }
+
+    const auto begin = std::chrono::steady_clock::now();
+    const u64 space_start = GetInteger(page_table.GetAddressSpaceStart());
+    const u64 space_end = space_start + page_table.GetAddressSpaceSize();
+    json blocks = json::array();
+    u64 offset = 0;
+    u64 unmapped_pages = 0;
+    std::vector<u8> chunk;
+    chunk.reserve(8 << 20);
+    const auto flush = [&] {
+        file.write(reinterpret_cast<const char*>(chunk.data()),
+                   static_cast<std::streamsize>(chunk.size()));
+        chunk.clear();
+    };
+    for (u64 address = 0; address < space_end;) {
+        Kernel::KMemoryInfo info{};
+        Kernel::Svc::PageInfo page_info{};
+        if (page_table.QueryInfo(&info, &page_info, address).IsError()) {
+            break;
+        }
+        const Kernel::Svc::MemoryInfo svc = info.GetSvcMemoryInfo();
+        const u64 base = svc.base_address;
+        const u64 size = svc.size;
+        if (size == 0 || base + size <= address) {
+            break;
+        }
+        const bool mapped = svc.state != Kernel::Svc::MemoryState::Free &&
+                            svc.state != Kernel::Svc::MemoryState::Inaccessible;
+        const bool writable = mapped && svc.state != Kernel::Svc::MemoryState::Io &&
+                              True(svc.permission & Kernel::Svc::MemoryPermission::Write);
+        if (mapped) {
+            json block = {{"address", HexAddress(base)},
+                          {"size", size},
+                          {"state", static_cast<u32>(svc.state)},
+                          {"perm", static_cast<u32>(svc.permission)},
+                          {"dumped", writable}};
+            if (writable) {
+                block["offset"] = offset;
+                for (u64 page = base; page < base + size; page += Memory::YUZU_PAGESIZE) {
+                    const u8* const source = GuestByte(memory, page);
+                    if (source == nullptr) {
+                        ++unmapped_pages;
+                        chunk.insert(chunk.end(), Memory::YUZU_PAGESIZE, u8{0});
+                    } else {
+                        chunk.insert(chunk.end(), source, source + Memory::YUZU_PAGESIZE);
+                    }
+                    if (chunk.size() >= (8u << 20)) {
+                        flush();
+                    }
+                }
+                offset += size;
+            }
+            blocks.push_back(std::move(block));
+        }
+        address = base + size;
+    }
+    flush();
+    file.close();
+    if (!file) {
+        throw std::runtime_error{fmt::format("writing {} failed (disk full?)", PathText(directory))};
+    }
+    const double elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+    json index = {
+        {"label", label},
+        {"number", number},
+        {"program_id", fmt::format("{:016X}", state.program_id)},
+        {"heap_start", HexAddress(GetInteger(page_table.GetHeapRegionStart()))},
+        {"code_start", HexAddress(GetInteger(page_table.GetCodeRegionStart()))},
+        {"alias_code_start", HexAddress(GetInteger(page_table.GetAliasCodeRegionStart()))},
+        {"bytes", offset},
+        {"unmapped_pages", unmapped_pages},
+        {"seconds", elapsed},
+        {"wall_time", std::chrono::duration_cast<std::chrono::seconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count()},
+        {"blocks", std::move(blocks)},
+    };
+    std::ofstream{directory / "index.json"} << index.dump(1);
+    LOG_INFO(Debug, "Memory snapshot {} ({}): {} MiB in {:.1f} s -> {}", number, label,
+             offset >> 20, elapsed, PathText(directory));
+    return {{"directory", PathText(directory)},
+            {"bytes", offset},
+            {"seconds", elapsed},
+            {"unmapped_pages", unmapped_pages}};
+}
+
 json ReadGpuMemory(ToolState& state, const json& params) {
     if (!IsVulkan()) {
         throw std::runtime_error{"GPU memory reads need the Vulkan renderer"};
@@ -654,6 +766,7 @@ Handlers MakeHandlers(const std::shared_ptr<ToolState>& state) {
         {"sample", handler(SampleThreads)},
         {"read_memory", handler(ReadMemory)},
         {"search_memory", handler(SearchMemory)},
+        {"snapshot_memory", handler(SnapshotMemory)},
         {"write_memory", handler(WriteMemory)},
         {"read_gpu_memory", handler(ReadGpuMemory)},
         {"input", waiting(Input)},
