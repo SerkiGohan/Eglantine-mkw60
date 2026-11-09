@@ -162,3 +162,20 @@ Every step has a switch, can be tested on its own and has no effect without the 
 - Idea for larger blocks: do not treat serial commands between draws (pausing/starting counters, copies) as a block end, but put them
   into the block as the "preamble" of the next draw (block = sequence of draw slots made of preamble + prepared commands). Only worth it
   once the cost per block boundary can be measured.
+
+## Decision point after S3: cost on one thread (9.11.2026, Peach Stadium with ghost, A B A B, no background load)
+
+All runs with `DRAW_REPLICA=3 DIRTY_SNAPSHOT=1 DESC_WRITER=1 LRU_DEFER=1 PREP_SPLIT=1 PREP_PRECHECK=1 PREP_BLOCK_DRAWS=16`, only
+`PREP_RECORD` changes:
+
+| Run | Frame | GPU/f | front drain/f |
+|---|---|---|---|
+| RECORD=0 (a / b) | 22.36 / 21.77 ms | 10.1 / 10.0 | 7.25 / 6.96 |
+| RECORD=1 (a / b) | 22.71 / 23.05 ms | 9.9 / 10.1 | 7.49 / 7.64 |
+| for comparison: cleaned-up fork **without** switches (8.11.) | 19.79 / 19.88 ms | 9.4 | 5.6–5.7 |
+
+- **Blocks (S3) cost ~0.8 ms/frame on one thread** (per spot +0.64 / +0.98, median +1.2 / +1.8 against RECORD=0).
+- **The other preparation switches together cost ~2.2 ms/frame** (22.07 against 19.84 ms); front drain +1.4 ms/f → the back is slower.
+- Together ~3 ms/frame ≈ **~135 ms/s more work at the back**, i.e. more than the expected gain from parallelizing (75–85 ms/s).
+  S4 only pays off if most of this overhead lies in the part that moves to the preparers, or if it can be cut a lot.
+- Next step: attribute the overhead (perf, all switches + RECORD=1 against no switches), then decide: cut the overhead or stop P3.
