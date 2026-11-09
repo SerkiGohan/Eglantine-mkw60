@@ -8,6 +8,7 @@
 #include <cinttypes>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 #include <span>
 #include <vector>
 
@@ -276,6 +277,47 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
             LOG_WARNING(Loader,
                         "Mario Kart World FPS patch skipped (mode matches {}, frame-time matches {})",
                         mode_matches, frame_time_matches);
+        }
+    }
+
+    // mkw60: EDEN_NX2_MKW_MINIMAP=0 turns off the 3D view of Mario Kart World's minimap (its own
+    // 448x440 render pass; ~2-4 ms per frame in the open world). The game keeps "minimap view on"
+    // in a scene object field (+0x424) and sets it at exactly one place, the same one it uses in
+    // tunnels (where the minimap is hidden):
+    //   ldr x0, [x19, #0x100] ; str w8, [x19, #0x424] ; bl <recompute views>
+    // Storing wzr instead makes every request "off"; the game then drops the view as in a tunnel.
+    // The round frame of the minimap stays on screen (black).
+    if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
+        const char* const minimap_env = std::getenv("EDEN_NX2_MKW_MINIMAP");
+        if (minimap_env != nullptr && std::string_view{minimap_env} == "0") {
+            const auto& text = nso_header.segments[0];
+            u8* const code = codeset.memory.data() + module_start + text.location;
+            const size_t count = text.size / sizeof(u32);
+            const auto word = [code](size_t index) {
+                u32 value;
+                std::memcpy(&value, code + index * sizeof(u32), sizeof(value));
+                return value;
+            };
+            constexpr u32 StoreViewOn = 0xB9042668; // str w8, [x19, #0x424]
+            size_t site = 0;
+            size_t matches = 0;
+            for (size_t i = 2; i + 1 < count; ++i) {
+                if (word(i) == StoreViewOn && word(i - 1) == 0xF9408260 && // ldr x0, [x19, #0x100]
+                    (word(i - 2) & 0xFF00001F) == 0x54000001 &&            // b.ne
+                    (word(i + 1) & 0xFC000000) == 0x94000000) {            // bl
+                    site = i;
+                    ++matches;
+                }
+            }
+            if (matches == 1) {
+                constexpr u32 StoreZero = 0xB904267F; // str wzr, [x19, #0x424]
+                std::memcpy(code + site * sizeof(u32), &StoreZero, sizeof(StoreZero));
+                LOG_INFO(Loader, "Mario Kart World: minimap 3D view off (main+{:#x})",
+                         text.location + site * sizeof(u32));
+            } else {
+                LOG_WARNING(Loader, "Mario Kart World minimap patch skipped ({} matches)",
+                            matches);
+            }
         }
     }
 
