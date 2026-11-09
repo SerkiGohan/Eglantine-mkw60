@@ -179,3 +179,18 @@ All runs with `DRAW_REPLICA=3 DIRTY_SNAPSHOT=1 DESC_WRITER=1 LRU_DEFER=1 PREP_SP
 - Together ~3 ms/frame ≈ **~135 ms/s more work at the back**, i.e. more than the expected gain from parallelizing (75–85 ms/s).
   S4 only pays off if most of this overhead lies in the part that moves to the preparers, or if it can be cut a lot.
 - Next step: attribute the overhead (perf, all switches + RECORD=1 against no switches), then decide: cut the overhead or stop P3.
+
+### Addendum: perf attribution and statistics turned off (9.11.2026 ~11:20–12:00)
+
+- perf with call chains (40 s per build, `~/mkw-perf/perf/graph-20261109-112022` all switches, `-112450` without): back **+3.7 ms/frame**.
+  The largest single item was measurement code in the rework switches: `Nx2EndDrawDirty` (statistics over 256 flags per draw) ~0.9 ms/f, clock
+  reads (precheck time, replica statistics) ~0.35 ms/f. → Commit `6a85309802`: these statistics only with `MKW60_PROBES`.
+- **A/B afterwards (Peach with ghost, A B A B):** without switches 20.30 / 20.03 ms, all switches + blocks 21.80 / 21.77 ms → **+1.6 ms/frame**
+  (before ~3). Front drain 5.9 → 7.0 ms/f.
+- **What could move to preparers in S4** (perf, ms/frame at ~42 FPS): resolving/binding buffers ~1.9 (DoUpdateGraphicsBuffers 1.07 +
+  BindHostGeometryBuffers 0.78), SSBO/texel binding 0.30, PushImageDescriptors 0.41, UpdateDynamicStates 0.56, ConfigureDraw + draw command
+  ~0.2–0.3 → **~3.3 ms/frame**. Serial remain among others uniforms 2.5, image views 1.5, FlushCaching 1.2, pipeline lookup 0.7, advance check
+  0.5, replica 0.3 ms/frame.
+- **Estimate for S4:** 21.8 ms − ~75 % × 3.3 ms ≈ 19.3 ms against 20.2 ms without switches → **~−0.5…−0.9 ms (≈ 3–4 %)**, minus the cost of
+  threads/waiting. Clearly less than the originally expected −1…−1.5 ms, with a large effort (contexts per preparer, resetting bindings,
+  races).
