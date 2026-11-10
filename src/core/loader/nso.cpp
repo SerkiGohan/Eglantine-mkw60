@@ -216,10 +216,21 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         const char* value = std::getenv("EDEN_NX2_MKW_FRAME_MODE");
         return value != nullptr ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
     }();
+    // mkw60: =3 leaves the mode load unpatched (the game reads its mode from [x19,#0x210],
+    // 0 = dynamic, 1 = 60, 2 = 30; can be changed live through the debug server) and keeps the
+    // game's own frame cost ([x19,#0x128] = max(CPU time, GPU timestamps), without the vblank
+    // wait). =4 is like 3, but with the whole frame time ([x19,#0xe8], as upstream's "dynamic FPS").
+    const bool frame_mode_live = forced_frame_mode == 3 || forced_frame_mode == 4;
     const bool frame_mode_forced = forced_frame_mode == 1 || forced_frame_mode == 2;
-    const bool mkw_dynamic = !frame_mode_forced && Settings::values.mkw_dynamic_fps.GetValue();
+    const bool mkw_dynamic = forced_frame_mode == 4 ||
+                             (!frame_mode_forced && !frame_mode_live &&
+                              Settings::values.mkw_dynamic_fps.GetValue());
     bool mkw_dynamic_fps_patch_applied = false;
-    if ((frame_mode_forced || mkw_dynamic || Settings::values.mkw_30fps.GetValue()) &&
+    if (frame_mode_live && forced_frame_mode == 3) {
+        LOG_INFO(Loader, "Mario Kart World: FPS mode left to the game (EDEN_NX2_MKW_FRAME_MODE=3)");
+    }
+    if ((frame_mode_forced || mkw_dynamic ||
+         (!frame_mode_live && Settings::values.mkw_30fps.GetValue())) &&
         name == "main" &&
         process.GetProgramId() == Settings::MarioKartWorldProgramId) {
         constexpr u32 ModeLoadInsn = 0xB9421268; // ldr w8, [x19, #0x210]
@@ -262,8 +273,10 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         }
 
         if (mode_matches == 1 && (!mkw_dynamic || frame_time_matches == 1)) {
-            std::memcpy(code + mode_site * sizeof(u32), &mode_instruction,
-                        sizeof(mode_instruction));
+            if (!frame_mode_live) {
+                std::memcpy(code + mode_site * sizeof(u32), &mode_instruction,
+                            sizeof(mode_instruction));
+            }
             if (mkw_dynamic) {
                 const u32 whole_frame_time = 0xF9407660 | (word(frame_time_site) & 0x1F);
                 std::memcpy(code + frame_time_site * sizeof(u32), &whole_frame_time,
@@ -271,7 +284,9 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
                 mkw_dynamic_fps_patch_applied = true;
             }
             LOG_INFO(Loader, "Mario Kart World: {} FPS mode enabled (main+{:#x})",
-                     mkw_dynamic ? "dynamic" : (mode == 1 ? "60" : "30"),
+                     frame_mode_live ? "live (game's own mode word, whole frame time)"
+                     : mkw_dynamic   ? "dynamic"
+                                     : (mode == 1 ? "60" : "30"),
                      text.location + mode_site * sizeof(u32));
         } else {
             LOG_WARNING(Loader,
