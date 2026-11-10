@@ -1878,10 +1878,15 @@ private:
             const char* value = std::getenv("EDEN_NX2_SWAP_INTERVAL");
             return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
         }();
-        const auto& process = Kernel::GetCurrentProcess(kernel);
-        const bool mkw_dynamic =
-            process.GetProgramId() == Settings::MarioKartWorldProgramId &&
-            process.IsMkwDynamicFpsPatchApplied() && Settings::values.mkw_dynamic_fps.GetValue();
+        // mkw60: the present runs in a service context, so GetCurrentProcess is not the game
+        // (found by SmileyTatsu); the application process is. The flag is set by the loader's
+        // real-time patch (EDEN_NX2_MKW_FRAME_MODE=5 or "dynamic FPS"): the game then advances
+        // 1 or 2 steps per frame by real elapsed time, so frames are shown as soon as they are
+        // ready (at most one per vblank) instead of holding 2-step frames for two vblanks.
+        const auto* app = system.ApplicationProcess();
+        const bool mkw_dynamic = app != nullptr &&
+                                 app->GetProgramId() == Settings::MarioKartWorldProgramId &&
+                                 app->IsMkwDynamicFpsPatchApplied();
         u32 swap_interval = std::clamp<u32>(timing >> 16, 1, 4);
         if (mkw_dynamic) {
             swap_interval = 1;

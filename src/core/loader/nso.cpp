@@ -220,11 +220,18 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     // 0 = dynamic, 1 = 60, 2 = 30; can be changed live through the debug server) and keeps the
     // game's own frame cost ([x19,#0x128] = max(CPU time, GPU timestamps), without the vblank
     // wait). =4 is like 3, but with the whole frame time ([x19,#0xe8], as upstream's "dynamic FPS").
+    // =5 (and the setting "dynamic FPS"): real-time mode. In dynamic mode the game keeps a time
+    // account (cost - interval * 16.67 ms) and advances 1 or 2 steps per frame, so it stays in
+    // real time at any frame rate as long as the cost is the real frame time. For that: mode 0,
+    // whole frame time [x19,#0xe8], no wait of the game itself for the second vblank in a
+    // 2-step frame (vsync function main+0x25ec50c), and presents paced with interval 1
+    // (PaceToVblank), so a 2-step frame is not stretched to 33 ms.
     const bool frame_mode_live = forced_frame_mode == 3 || forced_frame_mode == 4;
     const bool frame_mode_forced = forced_frame_mode == 1 || forced_frame_mode == 2;
-    const bool mkw_dynamic = forced_frame_mode == 4 ||
-                             (!frame_mode_forced && !frame_mode_live &&
-                              Settings::values.mkw_dynamic_fps.GetValue());
+    const bool mkw_real_time = forced_frame_mode == 5 ||
+                               (!frame_mode_forced && !frame_mode_live && forced_frame_mode != 5 &&
+                                Settings::values.mkw_dynamic_fps.GetValue());
+    const bool mkw_dynamic = forced_frame_mode == 4 || mkw_real_time;
     bool mkw_dynamic_fps_patch_applied = false;
     if (frame_mode_live && forced_frame_mode == 3) {
         LOG_INFO(Loader, "Mario Kart World: FPS mode left to the game (EDEN_NX2_MKW_FRAME_MODE=3)");
@@ -272,7 +279,22 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
             }
         }
 
-        if (mode_matches == 1 && (!mkw_dynamic || frame_time_matches == 1)) {
+        // In the vsync function: ldr w8, [x19, #0x88] ; cmp w8, #2 ; b.lo <done> ; ucvtf ;
+        // mov w8, #60.0f -- the wait until 0.99 * interval / 60 s after the frame start.
+        size_t vsync_wait_site = 0;
+        size_t vsync_wait_matches = 0;
+        if (mkw_real_time) {
+            for (size_t i = 0; i + 4 < count; ++i) {
+                if (word(i) == 0xB9408A68 && word(i + 1) == 0x7100091F &&
+                    (word(i + 2) & 0xFF00001F) == 0x54000003 && word(i + 4) == 0x52A84E08) {
+                    vsync_wait_site = i + 2;
+                    ++vsync_wait_matches;
+                }
+            }
+        }
+
+        if (mode_matches == 1 && (!mkw_dynamic || frame_time_matches == 1) &&
+            (!mkw_real_time || vsync_wait_matches == 1)) {
             if (!frame_mode_live) {
                 std::memcpy(code + mode_site * sizeof(u32), &mode_instruction,
                             sizeof(mode_instruction));
@@ -281,17 +303,26 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
                 const u32 whole_frame_time = 0xF9407660 | (word(frame_time_site) & 0x1F);
                 std::memcpy(code + frame_time_site * sizeof(u32), &whole_frame_time,
                             sizeof(whole_frame_time));
+            }
+            if (mkw_real_time) {
+                // b.lo -> b (same target): never wait for the second vblank in the game.
+                const u32 cond_branch = word(vsync_wait_site);
+                const s32 imm19 = static_cast<s32>(cond_branch << 8) >> 13;
+                const u32 branch = 0x14000000U | (static_cast<u32>(imm19) & 0x03FFFFFFU);
+                std::memcpy(code + vsync_wait_site * sizeof(u32), &branch, sizeof(branch));
                 mkw_dynamic_fps_patch_applied = true;
             }
             LOG_INFO(Loader, "Mario Kart World: {} FPS mode enabled (main+{:#x})",
                      frame_mode_live ? "live (game's own mode word, whole frame time)"
+                     : mkw_real_time ? "real-time dynamic"
                      : mkw_dynamic   ? "dynamic"
                                      : (mode == 1 ? "60" : "30"),
                      text.location + mode_site * sizeof(u32));
         } else {
             LOG_WARNING(Loader,
-                        "Mario Kart World FPS patch skipped (mode matches {}, frame-time matches {})",
-                        mode_matches, frame_time_matches);
+                        "Mario Kart World FPS patch skipped (mode matches {}, frame-time matches {}, "
+                        "vsync-wait matches {})",
+                        mode_matches, frame_time_matches, vsync_wait_matches);
         }
     }
 
