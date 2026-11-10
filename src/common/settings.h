@@ -608,6 +608,8 @@ struct Values {
                                                 Category::RendererAdvanced};
 
     // Mario Kart World: select a fixed or dynamic in-game frame-rate mode (loader/nso.cpp).
+    // mkw60: mkw_dynamic_fps is the real-time mode (EDEN_NX2_MKW_FRAME_MODE=5); key kept for
+    // existing configs.
     SwitchableSetting<bool> mkw_30fps{linkage, false, "mkw_30fps", Category::RendererAdvanced};
     SwitchableSetting<bool> mkw_dynamic_fps{linkage, false, "mkw_dynamic_fps",
                                             Category::RendererAdvanced};

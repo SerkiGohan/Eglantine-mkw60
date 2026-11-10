@@ -283,10 +283,11 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, mkw_30fps, tr("Mario Kart World: 30 FPS mode"),
            tr("Forces the game to use its native 30 FPS mode at normal game speed. "
               "Takes effect after restarting the game."));
-    INSERT(Settings, mkw_dynamic_fps, tr("Mario Kart World: dynamic FPS (experimental)"),
-           tr("Lets the game adjust between 30 and 60 FPS using whole-frame timing to maintain "
-              "normal game speed. Takes effect after restarting the game and takes precedence over "
-              "the 30 FPS mode."));
+    INSERT(Settings, mkw_dynamic_fps, tr("Mario Kart World: real-time dynamic FPS"),
+           tr("Keeps normal game speed at any frame rate: the game advances one or two steps per "
+              "frame by the real elapsed time, so drops below 60 FPS no longer slow the game down. "
+              "Use \"CPU Clocks: Normal\": Boost and Overclock speed up the game's clock. "
+              "Takes effect after restarting the game and takes precedence over the 30 FPS mode."));
     INSERT(Settings, mkw_hide_minimap, tr("Mario Kart World: hide minimap"),
            tr("Turns off the minimap's 3D view, like the game does in tunnels. Saves a separate "
               "render pass every frame (often 60 instead of ~40 FPS in the open world). "

@@ -28,6 +28,41 @@ instruction always store 0, so the game drops the view just as in a tunnel – n
 - The log says `Mario Kart World: minimap 3D view off (main+0x…)` when it is active. The patch looks for the instruction
   pattern, not a fixed address, and does nothing unless it finds exactly one match.
 
+## Highlight: real-time game speed at any frame rate
+
+In its 60 FPS mode, Mario Kart World advances one game step per frame. Whenever the emulator drops below 60 FPS, the
+whole game runs in slow motion (at 45 FPS it runs at 75 % speed). The usual workaround, the game's 30 FPS mode, costs
+smoothness everywhere, even where 60 FPS would be possible.
+
+The game already has the right mechanism built in. Its frame loop (found with Ghidra) has a dynamic mode that keeps a
+time account: each frame adds its cost and subtracts one vblank (16.67 ms) per game step; once the account is a full
+vblank behind, that frame advances two steps instead of one. So the game stays in real time at any frame rate between
+30 and 60 – as long as it is told the real frame time. In the emulator it was not:
+
+- The game's own cost measure (CPU time and GPU timestamps) does not see the time spent waiting for the emulated GPU.
+  It read ~13 ms while frames really took ~17.5 ms, so the game never switched and still ran in slow motion.
+- Upstream's "dynamic FPS" patch uses the whole frame time instead, but in a two-step frame the game itself waits
+  until 33 ms have passed, and the present is held for two vblanks. Once in two-step mode, it practically stayed there.
+
+The real-time mode uses the whole frame time, removes the game's own wait for the second vblank (one branch in the
+vsync function, found by instruction pattern) and presents every frame as soon as it is ready (at most one per vblank).
+
+Measured on Peach Stadium (time trial against a ghost, same machine as above):
+
+| Mode | FPS | Game speed |
+|---|---|---|
+| forced 60 FPS | 56–57 | 94–95 % (slow motion, down to 74 % in heavy spots) |
+| **real-time dynamic** | **56.7** | **99.8 %** (6 % two-step frames) |
+| forced 30 FPS | 30 | 100 % |
+
+- **Setting:** *Graphics → Advanced → "Mario Kart World: real-time dynamic FPS"* (restart the game after changing it).
+- **Environment variable:** `EDEN_NX2_MKW_FRAME_MODE=5` (wins over the settings; `=1`/`=2` force 60/30 FPS).
+- The log says `Mario Kart World: real-time dynamic FPS mode enabled (main+0x…)` when it is active.
+- **Do not combine with "CPU Clocks: Boost / Overclock".** These run the guest clock faster (×1.7 / ×2), so every
+  frame looks that much longer to the game: it advances two steps per frame too often and runs too fast (up to double
+  speed with Overclock). Use the default ("Normal").
+- Long stalls (well over 50 ms) are not caught up; the game limits its time account to ±66.7 ms by design.
+
 Also recommended for playing: `EDEN_NX2_RESNAPSHOT=0` (do not re-read queued command lists after a resumed semaphore
 acquire; −0.6 ms per frame on Peach Stadium, no visual issues seen).
 
@@ -109,6 +144,8 @@ All are environment variables, read at start. Most exist for testing a single st
 | Variable | Effect |
 |---|---|
 | `EDEN_NX2_MKW_FRAME_MODE=1` / `=2` | Mario Kart World: force 60 / 30 FPS mode (1 is used for measuring) |
+| `EDEN_NX2_MKW_FRAME_MODE=5` | Mario Kart World: real-time dynamic mode (same as the setting "real-time dynamic FPS") |
+| `EDEN_NX2_MKW_FRAME_MODE=3` / `=4` | Mario Kart World: leave the mode word to the game (switchable live through the debug server) with the game's own frame cost / the whole frame time; for analysis |
 | `EDEN_NX2_MKW_MINIMAP=0` / `=1` | Mario Kart World: hide / show the minimap's 3D view (overrides the setting "hide minimap") |
 | `EDEN_NX2_RESNAPSHOT=0` | upstream switch: no re-read of queued command lists after a resumed acquire (recommended) |
 | `EDEN_NX2_DEBUG_SERVER=127.0.0.1:7777` | upstream debug server; this fork adds the tools `snapshot_memory` (all writable guest memory to disk) and `code_trace` (which guest instructions run in a time window); `EDEN_NX2_DEBUG_WRITE=1` allows `write_memory` |
